@@ -2,6 +2,55 @@
 
 ---
 
+## v1.29 — Jul 14, 2026
+
+- Find menu: new 6th (last) option "Find & Replace" — enter a folder, the text to find, the replacement text, and an optional file extension. Scans recursively (hidden/binary/excluded files skipped); matching is literal and case-insensitive. ALWAYS dry-runs first, listing every match as file + line number + line with the matched text highlighted, then a [y/N] confirm performs the replacement (with a follow-up prompt offering .bak backups of each modified file) — No exits unchanged. .bak files are skipped by the scan (so reruns never clobber fresh backups) unless --ext bak is asked for explicitly. Round-trips file bytes and line endings via surrogateescape + newline="".
+- New find_and_replace()/_find_replace_screen(); results screens log to fm.log and offer [R] Run Again. CLI: fm.py find-replace ROOT SEARCH REPLACE [--ext E] [--apply] [--bak] [--yes].
+
+---
+
+## v1.28 — Jul 14, 2026
+
+- Main Menu: new "Clean Up" option (9th — last, per spec). Submenu:
+  1. Remove Junk Files — find and delete every .DS_Store / desktop.ini under a root folder (hidden folders included; reuses the Remove preview/confirm machinery).
+  2. Purge Old Log Files — trim entries older than N days (default 90) from every .log file in ~/Documents/log (folder and days promptable), ported from purgeLog.sh but block-aware: untimestamped body lines follow their [YYYY-MM-DD HH:MM:SS] header's keep/purge decision, so whole entries purge together. Per-file purge/keep table preview; .bak backup before each rewrite.
+- Both are DRY RUN until confirmed. CLI: fm.py cleanup junk ROOT [--delete] [--yes] and fm.py cleanup logs [FOLDER] [--days N] [--delete] [--yes].
+
+---
+
+## v1.27 — Jul 14, 2026
+
+- Display menu is now: 1. All Drives  2. Subfolders Alphabetically  3. Subfolders by Size (largest first). New display_all_drives() lists the boot volume plus every mount under /Volumes (deduplicated by device) with Size / Used / Free / Use% and the mount point — Free comes from shutil.disk_usage so it matches Finder's Available; Use% colors yellow at 75% and red at 90%. CLI: fm.py drives.
+
+---
+
+## v1.26 — Jul 14, 2026
+
+- Main Menu: new "Monitor" option (5th, keeping the menu alphabetical) — Monitor File Activity. Watches a folder (or a fmConfig.json monitorProfiles entry: name, folder, recursive, extensions, output) and reports every created/modified/deleted file in real time, on screen and to the chosen log: fm.log (plain timestamped lines) or ~/Documents/log/fmMonitor.csv (Timestamp,Filename,Folder,Event rows). Options: recursive (default Yes) and a file-extension filter. Stdlib polling (1s snapshot diffs — no watchdog dependency); events flush immediately so tail -f tracks the screen. [Q/ESC] stops and returns to the menu (Ctrl-C on the CLI). Ported from the standalone fileActivity.py idea. CLI: fm.py monitor FOLDER [--no-recursive] [--ext jpg,png] [--csv], or fm.py monitor --profile NAME.
+- Refactored profile loading into _load_config_profiles(key), shared by syncProfiles and monitorProfiles.
+
+---
+
+## v1.25 — Jul 14, 2026
+
+- Main Menu: new "Eject" option (3rd, keeping the menu alphabetical) — Eject All External Drives (macOS). Lists the mounted external drives (name, size, mount point), confirms, then ejects each with a per-drive Success/Failed status and offers a force eject for failures. Detection and eject logic ported from ejectDrives.py (diskutil info scan of /Volumes; diskutil eject with Finder/AppleScript fallback; force = diskutil unmountDisk force). Results are logged to fm.log. CLI: fm.py eject [--list] [--force] [--yes].
+
+---
+
+## v1.24 — Jul 14, 2026
+
+- Main Menu: new "Sync" option (before Zip) — one-way folder sync pushing new/updated files A → B or B → A. Interactive flow asks for the two folders, the direction, the both-sides conflict rule (newest wins default / largest wins), recursive (default Yes), and exclude hidden files (default Yes). Saved profiles from fmConfig.json (syncProfiles list: name, folderA, folderB, direction, recursive, conflict, excludeHidden) appear as Sync menu options; the [H] Help documents the profile format.
+- Every run previews (DRY RUN) and only copies after an explicit confirm; nothing is ever deleted; copies use shutil.copy2 so timestamps survive for future 'newest' runs. Results screens are logged to ~/Documents/log/fm.log. CLI: fm.py sync A B [--to b|a] [--conflict newest|largest] [--no-recursive] [--include-hidden] [--copy] [--yes], or fm.py sync --profile NAME.
+
+---
+
+## v1.23 — Jul 14, 2026
+
+- Main Menu [H] Help: new unnumbered "Logging" section explaining that commands and their results screens are appended (timestamped, colors stripped) to the activity log ~/Documents/log/fm.log, which actions log there, and that Log Zip File records to CB9Inventory instead.
+- render_menu()/_render_menu_lines() gained a help_note parameter and show_menu_help() a note parameter for such extra Help sections; the description wrapper was factored out into _print_help_desc().
+
+---
+
 ## v1.22 — Jul 13, 2026
 
 - Find menu: new 5th option "Find Missing by Filename & Size" — same flow as Find Missing by Filename, but files match only when BOTH the name AND the size agree, so same-named files with different sizes are also reported (size shown in both columns). CLI: find-missing --size.
@@ -88,7 +137,7 @@
 
 ## v1.9 — Jul 9, 2026
 
-- Expanded the [H] Help descriptions for every menu (Main, Compare, Compare- By, Display, Find, Remove, Zip) into full explanations with inputs, tips, and examples.
+- Expanded the [H] Help descriptions for every menu (Main, Compare, Compare-By, Display, Find, Remove, Zip) into full explanations with inputs, tips, and examples.
 - show_menu_help() now word-wraps descriptions to the terminal width and supports multi-line / bulleted text with hanging indents.
 
 ---
@@ -103,14 +152,14 @@
 ## v1.7 — Jul 9, 2026
 
 - Find: reworked into "Find Files" (multi-criteria) + "Find Folders". Find Files lets you multi-select any of Filename pattern / Extension / Size over N / Size under N (Space toggles), then prompts for each value and runs one combined AND search — e.g. .mov files under 5 MB.
-- Added render_multiselect() (checkbox menu: ↑↓ move, Space toggle, Enter confirm) and find_files_combined(); new CLI: find-files [--name/--ext/ --over/--under]. The old single-criterion `find` subcommand still works.
+- Added render_multiselect() (checkbox menu: ↑↓ move, Space toggle, Enter confirm) and find_files_combined(); new CLI: find-files [--name/--ext/--over/--under]. The old single-criterion `find` subcommand still works.
 
 ---
 
 ## v1.6 — Jul 9, 2026
 
 - All menus now support Up/Down arrow navigation with a highlighted row; Enter selects the highlighted option (read_key + arrow loop in render_menu).
-- Typing a number still selects (moves the highlight); H = Help, Q/ESC = Back/ Exit — all instant. Non-TTY (piped/automation) keeps line-based selection.
+- Typing a number still selects (moves the highlight); H = Help, Q/ESC = Back/Exit — all instant. Non-TTY (piped/automation) keeps line-based selection.
 - Zip-file browser reuses the same arrow-navigable menu.
 
 ---
@@ -146,7 +195,7 @@
 
 - Every menu/result screen now ends with the standard CB9 footer whose last line is the copyright notice.
 - Submenus use a custom renderer: [H] Help shows a description of each option, and [Q/B] both return to the parent menu.
-- Reworked the Compare submenu: - "Compare 2 Files" — side-by-side, line-by-line file comparison. - "Compare Folder Contents" — options Recursive (Y/N) and Compare By Name / Size / Both (both directions always reported).
+- Reworked the Compare submenu: "Compare 2 Files" — side-by-side, line-by-line file comparison; "Compare Folder Contents" — options Recursive (Y/N) and Compare By Name / Size / Both (both directions always reported).
 - CLI: replaced compare-files/compare-folders with compare-2files and compare-contents [--recursive] [--by].
 
 ---
@@ -160,3 +209,5 @@
 - Supports both an interactive menu and direct CLI subcommands.
 
 ---
+
+Copyright © 2026 Cloud Box 9 Inc. All rights reserved.

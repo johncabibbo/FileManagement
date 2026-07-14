@@ -2,12 +2,18 @@
 #
 # Filename: fm.py
 # Project: File Management
-# Version: 1.22
-# Description: File Management — a unified interactive + CLI tool that combines
-#              the compare, display, find, remove, and zip file-management
-#              scripts into a single CB9Lib-based program.
+# Version: 1.29
+# Description: File Manager — a unified interactive + CLI tool that combines
+#              the compare, display, eject, find, monitor, remove, sync, zip,
+#              and clean-up file-management scripts into a single CB9Lib-based
+#              program.
 # Maintainer: Cloud Box 9 Inc.
-# Last Modified Date: 2026-07-13
+# Last Modified Date: 2026-07-14
+#
+# Combines the functionality of:
+#   compareFilesRecursive.sh, compareSubFolders.sh, folderSizes.sh,
+#   findLargeFiles.sh, findDuplicates.sh, findDuplicatesExt.sh,
+#   removeFiles.sh, zipSubFolders.sh, zipView.py
 #
 # Usage (interactive):
 #   fm.py
@@ -16,6 +22,7 @@
 #   fm.py compare-2files   FILE_A FILE_B
 #   fm.py compare-contents A B [--recursive] [--by name|size|both]
 #   fm.py sizes [FOLDER] [--sort alpha|size]
+#   fm.py drives                          (size and free space of all mounted drives)
 #   fm.py find folder PATTERN [ROOT]
 #   fm.py find name   PATTERN [ROOT]
 #   fm.py find ext    EXT     [ROOT]
@@ -25,26 +32,277 @@
 #   fm.py find-dups   FOLDER...           (duplicate filenames, size table per folder)
 #   fm.py find-missing A B [--in first|second|either] [--size]   (filenames in only one
 #                                          folder; --size also matches the file size)
+#   fm.py find-replace ROOT SEARCH REPLACE [--ext E] [--apply] [--bak] [--yes]
+#                                          (find & replace text in files; dry run
+#                                           unless --apply)
 #   fm.py remove folder      PATH        [--delete] [--yes]
 #   fm.py remove name        PATTERN ROOT [--delete] [--yes]   (files by name)
 #   fm.py remove folder-name PATTERN ROOT [--delete] [--yes]   (folders by name)
 #   fm.py remove dup-name    FOLDER...    [--delete] [--yes]
 #   fm.py remove dup-hash    FOLDER...    [--delete] [--yes]
+#   fm.py eject [--list] [--force] [--yes]   (eject all external drives — macOS)
+#   fm.py monitor FOLDER [--no-recursive] [--ext jpg,png] [--csv]   (Ctrl-C stops)
+#   fm.py monitor --profile NAME          (run a monitorProfiles entry from fmConfig.json)
+#   fm.py sync FOLDER_A FOLDER_B [--to b|a] [--conflict newest|largest]
+#              [--no-recursive] [--include-hidden] [--copy] [--yes]
+#   fm.py sync --profile NAME             (run a syncProfiles entry from fmConfig.json)
 #   fm.py zip-subfolders  TARGET [DEST] [-r]
 #   fm.py zip-view [ZIP|FOLDER]
 #   fm.py zip-log  TARGET                 (log .zip/.tar to CB9Inventory)
+#   fm.py cleanup junk ROOT [--delete] [--yes]        (.DS_Store / desktop.ini)
+#   fm.py cleanup logs [FOLDER] [--days N] [--delete] [--yes]   (purge old log entries)
 #
 # NOTE: All Remove actions default to a DRY RUN (nothing is deleted). Deletion
 #       only happens when explicitly opted-in (interactive confirm, or the
-#       --delete flag on the CLI).
+#       --delete flag on the CLI). Sync is the same: it previews and only
+#       copies after explicit opt-in (interactive confirm, or --copy).
 #
 # -----------------------------------------------------------------------------
-# Revision History: see CHANGE_LOG.md
+# Revision History:
+# -----------------------------------------------------------------------------
+# v1.29 (2026-07-14)
+#   • Find menu: new 6th (last) option "Find & Replace" — enter a folder, the
+#     text to find, the replacement text, and an optional file extension.
+#     Scans recursively (hidden/binary/excluded files skipped); matching is
+#     literal and case-insensitive. ALWAYS dry-runs first, listing every
+#     match as file + line number + line with the matched text highlighted,
+#     then a [y/N] confirm performs the replacement (with a follow-up prompt
+#     offering .bak backups of each modified file) — No exits unchanged.
+#     .bak files are skipped by the scan (so reruns never clobber fresh
+#     backups) unless --ext bak is asked for explicitly.
+#     Round-trips file bytes and line endings via surrogateescape +
+#     newline="". New find_and_replace()/_find_replace_screen(); results
+#     screens log to fm.log and offer [R] Run Again. CLI: fm.py find-replace
+#     ROOT SEARCH REPLACE [--ext E] [--apply] [--bak] [--yes].
+# -----------------------------------------------------------------------------
+# v1.28 (2026-07-14)
+#   • Main Menu: new "Clean Up" option (9th — last, per spec). Submenu:
+#     1. Remove Junk Files — find and delete every .DS_Store / desktop.ini
+#     under a root folder (hidden folders included; reuses the Remove
+#     preview/confirm machinery). 2. Purge Old Log Files — trim entries older
+#     than N days (default 90) from every .log file in ~/Documents/log
+#     (folder and days promptable), ported from purgeLog.sh but block-aware:
+#     untimestamped body lines follow their [YYYY-MM-DD HH:MM:SS] header's
+#     keep/purge decision, so whole entries purge together. Per-file
+#     purge/keep table preview; .bak backup before each rewrite. Both are
+#     DRY RUN until confirmed. CLI: fm.py cleanup junk ROOT [--delete]
+#     [--yes] and fm.py cleanup logs [FOLDER] [--days N] [--delete] [--yes].
+# -----------------------------------------------------------------------------
+# v1.27 (2026-07-14)
+#   • Display menu is now: 1. All Drives  2. Subfolders Alphabetically
+#     3. Subfolders by Size (largest first). New display_all_drives() lists
+#     the boot volume plus every mount under /Volumes (deduplicated by
+#     device) with Size / Used / Free / Use% and the mount point — Free comes
+#     from shutil.disk_usage so it matches Finder's Available; Use% colors
+#     yellow at 75% and red at 90%. CLI: fm.py drives.
+# -----------------------------------------------------------------------------
+# v1.26 (2026-07-14)
+#   • Main Menu: new "Monitor" option (5th, keeping the menu alphabetical) —
+#     Monitor File Activity. Watches a folder (or a fmConfig.json
+#     monitorProfiles entry: name, folder, recursive, extensions, output) and
+#     reports every created/modified/deleted file in real time, on screen and
+#     to the chosen log: fm.log (plain timestamped lines) or
+#     ~/Documents/log/fmMonitor.csv (Timestamp,Filename,Folder,Event rows).
+#     Options: recursive (default Yes) and a file-extension filter. Stdlib
+#     polling (1s snapshot diffs — no watchdog dependency); events flush
+#     immediately so tail -f tracks the screen. [Q/ESC] stops and returns to
+#     the menu (Ctrl-C on the CLI). Ported from the standalone
+#     fileActivity.py idea. CLI: fm.py monitor FOLDER [--no-recursive]
+#     [--ext jpg,png] [--csv], or fm.py monitor --profile NAME.
+#   • Refactored profile loading into _load_config_profiles(key), shared by
+#     syncProfiles and monitorProfiles.
+# -----------------------------------------------------------------------------
+# v1.25 (2026-07-14)
+#   • Main Menu: new "Eject" option (3rd, keeping the menu alphabetical) —
+#     Eject All External Drives (macOS). Lists the mounted external drives
+#     (name, size, mount point), confirms, then ejects each with a per-drive
+#     Success/Failed status and offers a force eject for failures. Detection
+#     and eject logic ported from ejectDrives.py (diskutil info scan of
+#     /Volumes; diskutil eject with Finder/AppleScript fallback; force =
+#     diskutil unmountDisk force). Results are logged to fm.log. CLI:
+#     fm.py eject [--list] [--force] [--yes].
+# -----------------------------------------------------------------------------
+# v1.24 (2026-07-14)
+#   • Main Menu: new "Sync" option (before Zip) — one-way folder sync pushing
+#     new/updated files A → B or B → A. Interactive flow asks for the two
+#     folders, the direction, the both-sides conflict rule (newest wins
+#     default / largest wins), recursive (default Yes), and exclude hidden
+#     files (default Yes). Saved profiles from fmConfig.json (syncProfiles
+#     list: name, folderA, folderB, direction, recursive, conflict,
+#     excludeHidden) appear as Sync menu options; the [H] Help documents the
+#     profile format. Every run previews (DRY RUN) and only copies after an
+#     explicit confirm; nothing is ever deleted; copies use shutil.copy2 so
+#     timestamps survive for future 'newest' runs. Results screens are logged
+#     to ~/Documents/log/fm.log. CLI: fm.py sync A B [--to b|a] [--conflict
+#     newest|largest] [--no-recursive] [--include-hidden] [--copy] [--yes],
+#     or fm.py sync --profile NAME.
+# -----------------------------------------------------------------------------
+# v1.23 (2026-07-14)
+#   • Main Menu [H] Help: new unnumbered "Logging" section explaining that
+#     commands and their results screens are appended (timestamped, colors
+#     stripped) to the activity log ~/Documents/log/fm.log, which actions log
+#     there, and that Log Zip File records to CB9Inventory instead.
+#   • render_menu()/_render_menu_lines() gained a help_note parameter and
+#     show_menu_help() a note parameter for such extra Help sections; the
+#     description wrapper was factored out into _print_help_desc().
+# -----------------------------------------------------------------------------
+# v1.22 (2026-07-13)
+#   • Find menu: new 5th option "Find Missing by Filename & Size" — same flow
+#     as Find Missing by Filename, but files match only when BOTH the name AND
+#     the size agree, so same-named files with different sizes are also
+#     reported (size shown in both columns). CLI: find-missing --size.
+# -----------------------------------------------------------------------------
+# v1.21 (2026-07-13)
+#   • Compare & Find results screens now end with "[R] Run Again  [Q/ESC]
+#     Quit/Back" instead of the plain Enter pause — R reruns the same action
+#     with the same inputs (fresh scan; Find Dup/Missing reruns re-log to
+#     fm.log). R/Q/ESC react instantly; Enter also goes back. New pause_rerun();
+#     CLI one-shot runs are unchanged. Remove/Zip keep the plain pause.
+# -----------------------------------------------------------------------------
+# v1.20 (2026-07-13)
+#   • .DS_Store and desktop.ini files (case-insensitive) are now also ignored
+#     by all searches and compares — every Find feature and Compare Folder
+#     Contents. Added EXCLUDED_FILE_NAMES + is_excluded_file(). Remove → By
+#     File Name still targets them intentionally (junk-file cleanup).
+# -----------------------------------------------------------------------------
+# v1.19 (2026-07-13)
+#   • The Windows Recycle Bin folder ($RECYCLE.BIN, case-insensitive) is now
+#     excluded from all searches and compares: every Find feature (Files,
+#     Folders, Duplicates/Missing by Filename) and Compare Folder Contents
+#     (recursive and top-level). Added EXCLUDED_DIR_NAMES + prune_dirs().
+# -----------------------------------------------------------------------------
+# v1.18 (2026-07-13)
+#   • Find Duplicates/Missing by Filename: the results screen is now also
+#     appended (ANSI-stripped, timestamped) to ~/Documents/log/fm.log via the
+#     new _ActivityLog stdout tee.
+#   • Find Missing modes "In 1st/2nd folder only": added a last 'Folder'
+#     column showing the directory containing each file (_scan_filenames now
+#     records (size, dir) per occurrence).
+#   • Find Missing: the Folder 1/2 list is repeated after the results table.
+# -----------------------------------------------------------------------------
+# v1.17 (2026-07-13)
+#   • Find Missing by Filename — Show menu: the two entered folders are now
+#     displayed below the options as "Folder 1 - …" / "Folder 2 - …".
+#   • render_menu()/_render_menu_lines() gained an `outro` parameter (context
+#     line(s) below the options), shared via _print_menu_outro().
+# -----------------------------------------------------------------------------
+# v1.16 (2026-07-13)
+#   • Find menu: new 4th option "Find Missing by Filename" — enter two folders,
+#     then choose In 1st folder only / In 2nd folder only / In either folder
+#     (only once). Filenames present in only one folder are shown in the same
+#     size table as Find Duplicates by Filename (blank column = missing there).
+#   • Refactored the folder scan + table renderer into _scan_filenames() /
+#     _print_filename_size_table() shared by both features; CLI: find-missing.
+# -----------------------------------------------------------------------------
+# v1.15 (2026-07-13)
+#   • Find menu: new 3rd option "Find Duplicates by Filename" — enter one or
+#     more folders (comma-separated); files sharing the same name are shown in
+#     a table with a numbered header per folder and one size column per folder
+#     (multiple occurrences within one folder list each size). Read-only.
+#   • Added find_duplicates_by_filename(), fmt_size_short(); CLI: find-dups.
+# -----------------------------------------------------------------------------
+# v1.14 (2026-07-11)
+#   • Log Zip File now sends zipFileFolder (the archive's containing folder)
+#     so CB9Inventory records where each zip lives.
+# -----------------------------------------------------------------------------
+# v1.13 (2026-07-11)
+#   • Zip menu: new 2nd option "Log Zip File" — logs a .zip/.tar archive (or
+#     every archive in a folder, top level only) to the CB9Inventory database
+#     on a remote server via the DocInfo Manager API (api/zipFileLog.php). zipFile rows
+#     are matched by name+size (insert or update); zipFileContent is synced
+#     (update by path, insert new, soft-delete missing). .gz files are ignored.
+#   • New fmConfig.json (logZip: apiUrl, serverSecretKey) + CLI: fm.py zip-log.
+# -----------------------------------------------------------------------------
+# v1.12 (2026-07-09)
+#   • Remove → Duplicates (by Name / by Hash): deleting now requires typing the
+#     word YES (any other input cancels) — a stronger gate than the y/n used by
+#     the other removals. Added confirm_yes_word() + _finish_removal(require_yes).
+# -----------------------------------------------------------------------------
+# v1.11 (2026-07-09)
+#   • Fixed: after selecting a menu option, a follow-up input prompt (e.g.
+#     "Folder to measure:") was printed on the same line as "Option:". The menu
+#     now emits a newline on selection so each new input request starts fresh.
+# -----------------------------------------------------------------------------
+# v1.10 (2026-07-09)
+#   • Zip menu: "View Zip" is now the first option, "Zip SubFolders" second.
+# -----------------------------------------------------------------------------
+# v1.9 (2026-07-09)
+#   • Expanded the [H] Help descriptions for every menu (Main, Compare, Compare-
+#     By, Display, Find, Remove, Zip) into full explanations with inputs, tips,
+#     and examples.
+#   • show_menu_help() now word-wraps descriptions to the terminal width and
+#     supports multi-line / bulleted text with hanging indents.
+# -----------------------------------------------------------------------------
+# v1.8 (2026-07-09)
+#   • Remove menu reordered/renamed: 1) Duplicates by Name, 2) Duplicates by
+#     Hash, 3) By File Name, 4) By Folder Name.
+#   • New "By Folder Name": deletes folders whose name matches a wildcard under a
+#     search root (recursively); only top-most matches are removed. Dry-run by
+#     default. Added remove_folders_by_name() + CLI 'remove folder-name'.
+# -----------------------------------------------------------------------------
+# v1.7 (2026-07-09)
+#   • Find: reworked into "Find Files" (multi-criteria) + "Find Folders".
+#     Find Files lets you multi-select any of Filename pattern / Extension /
+#     Size over N / Size under N (Space toggles), then prompts for each value and
+#     runs one combined AND search — e.g. .mov files under 5 MB.
+#   • Added render_multiselect() (checkbox menu: ↑↓ move, Space toggle, Enter
+#     confirm) and find_files_combined(); new CLI: find-files [--name/--ext/
+#     --over/--under]. The old single-criterion `find` subcommand still works.
+# -----------------------------------------------------------------------------
+# v1.6 (2026-07-09)
+#   • All menus now support Up/Down arrow navigation with a highlighted row;
+#     Enter selects the highlighted option (read_key + arrow loop in render_menu).
+#   • Typing a number still selects (moves the highlight); H = Help, Q/ESC = Back/
+#     Exit — all instant. Non-TTY (piped/automation) keeps line-based selection.
+#   • Zip-file browser reuses the same arrow-navigable menu.
+# -----------------------------------------------------------------------------
+# v1.5 (2026-07-09)
+#   • Display (Folder Sizes): the Folder name is now the first column (was last),
+#     with a computed column width so rows, header, and TOTAL stay aligned.
+# -----------------------------------------------------------------------------
+# v1.4 (2026-07-09)
+#   • Removed the copyright line from menu/result screens; it now appears only
+#     on the exit screen. Menu footers show just the separator bars + legend.
+# -----------------------------------------------------------------------------
+# v1.3 (2026-07-09)
+#   • Replaced [B] Back with [Q/ESC] on every menu: on a submenu Q/ESC go back;
+#     on the Main Menu they exit.
+#   • ESC now reacts INSTANTLY (no Enter needed) via a hybrid raw-mode reader
+#     (menu_read); digits/letters still buffer until Enter for multi-digit input.
+#   • All submenus now default to option 1 — pressing Enter selects it.
+# -----------------------------------------------------------------------------
+# v1.2 (2026-07-09)
+#   • Fixed: pasting a folder/file path that was wrapped in single or double
+#     quotes, or drag-and-dropped (backslash-escaped spaces), no longer errors.
+#   • Added clean_path() which strips surrounding quotes and undoes backslash
+#     escapes; applied to every interactive prompt and CLI path argument.
+# -----------------------------------------------------------------------------
+# v1.1 (2026-07-09)
+#   • Every menu/result screen now ends with the standard CB9 footer whose last
+#     line is the copyright notice.
+#   • Submenus use a custom renderer: [H] Help shows a description of each
+#     option, and [Q/B] both return to the parent menu.
+#   • Reworked the Compare submenu:
+#       - "Compare 2 Files" — side-by-side, line-by-line file comparison.
+#       - "Compare Folder Contents" — options Recursive (Y/N) and
+#         Compare By Name / Size / Both (both directions always reported).
+#   • CLI: replaced compare-files/compare-folders with compare-2files and
+#     compare-contents [--recursive] [--by].
+# -----------------------------------------------------------------------------
+# v1.0 (2026-07-09)
+#   • Initial version. Merges 9 legacy file-management scripts into one tool.
+#   • Menu: Compare / Display / Find / Remove / Zip (with submenus).
+#   • Built on CB9Lib (header, footer, menu, confirm, exit_screen, colors,
+#     project sounds).
+#   • Remove actions are dry-run by default; deletion is explicit opt-in.
+#   • Supports both an interactive menu and direct CLI subcommands.
 # -----------------------------------------------------------------------------
 
 import sys
 import os
 import argparse
+import csv
+import time
 import zipfile
 import tarfile
 import hashlib
@@ -72,8 +330,8 @@ from CB9Lib import (
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
-SCRIPT_NAME = "File Management"
-VERSION     = "1.22"
+SCRIPT_NAME = "File Manager"
+VERSION     = "1.29"
 VER         = f"v{VERSION}"
 
 SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -608,6 +866,62 @@ def display_folder_sizes(folder, sort_mode="alpha"):
     pause_return()
 
 
+def display_all_drives():
+    """List every mounted drive — the boot volume plus each drive under
+    /Volumes — with its total size, used and free space, and use%. Free is
+    what shutil.disk_usage reports as available to the user, so it matches
+    Finder's Available figure. Duplicate mounts of the same device are
+    listed once."""
+    screen("All Drives")
+    print()
+
+    candidates = ["/"]
+    volumes = "/Volumes"
+    if os.path.isdir(volumes):
+        for name in sorted(os.listdir(volumes), key=str.lower):
+            path = os.path.join(volumes, name)
+            if os.path.ismount(path):
+                candidates.append(path)
+
+    rows = []
+    seen_devices = set()
+    for path in candidates:
+        try:
+            dev = os.stat(path).st_dev
+            usage = shutil.disk_usage(path)
+        except OSError:
+            continue
+        if dev in seen_devices:
+            continue
+        seen_devices.add(dev)
+        name = "/" if path == "/" else os.path.basename(path)
+        pct = (usage.used / usage.total * 100) if usage.total else 0
+        rows.append((name, path, usage.total, usage.used, usage.free, pct))
+
+    if not rows:
+        print(color_text("  No drives found.", fg=YELLOW))
+        pause_return()
+        return
+
+    name_w = max([len(r[0]) for r in rows] + [len("Drive")])
+    name_w = min(name_w, 40)
+    print(color_text(f"  {'Drive':<{name_w}}  {'Size':>10}  {'Used':>10}  "
+                     f"{'Free':>10}  {'Use%':>5}  Mount Point",
+                     fg=YELLOW, style=BOLD))
+    print(f"  {DIM}{'-' * name_w}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 5}  {'-' * 20}{RESET}")
+    for name, path, total, used, free, pct in rows:
+        pct_color = RED if pct >= 90 else (YELLOW if pct >= 75 else GREEN)
+        disp = name[:name_w].ljust(name_w)
+        print(f"  {WHITE}{disp}{RESET}  {fmt_size(total):>10}  {fmt_size(used):>10}  "
+              f"{GREEN}{fmt_size(free):>10}{RESET}  "
+              f"{color_text(f'{pct:>4.0f}%', fg=pct_color)}  {DIM}{path}{RESET}")
+    print()
+    print(f"  {DIM}{len(rows)} drive(s). Free = space available to you (matches "
+          f"Finder's Available).{RESET}")
+
+    pause_return()
+
+
 # =============================================================================
 # FIND
 # =============================================================================
@@ -986,6 +1300,155 @@ def _find_missing_screen(folder_a, folder_b, mode, match_size=False):
     folder_list()
 
 
+def find_and_replace(root, search, replace, ext=None, live_requested=None,
+                     assume_yes=False, backup=False):
+    """Find a text string in files under a folder and replace it.
+
+    ALWAYS a dry run first: every match is listed (file, line number, line
+    with the match highlighted) before anything is touched. Matching is
+    literal and case-insensitive; the replacement is inserted exactly as
+    typed. Hidden files/folders, excluded names, and binary files are never
+    scanned or modified. `ext` limits the scan to one file extension.
+
+    live_requested: None  -> interactive (confirm Y/N, then ask about .bak)
+                    True  -> CLI --apply (confirm unless assume_yes)
+                    False -> CLI dry run (report only)
+    The screen output is also appended to ~/Documents/log/fm.log.
+    """
+    while True:
+        with _ActivityLog():
+            _find_replace_screen(root, search, replace, ext,
+                                 live_requested, assume_yes, backup)
+        if not pause_rerun():
+            return
+
+
+def _find_replace_screen(root, search, replace, ext, live_requested,
+                         assume_yes, backup):
+    screen("Find & Replace")
+    print()
+    ext_l = ext.lstrip(".").lower() if ext else None
+    print(f"  {YELLOW}Folder{RESET} : {root}")
+    print(f"  {YELLOW}Find{RESET}   : {search}  {DIM}(case-insensitive){RESET}")
+    print(f"  {YELLOW}Replace{RESET}: "
+          f"{replace if replace else DIM + '(remove the text)' + RESET}")
+    if ext_l:
+        print(f"  {YELLOW}Ext{RESET}    : .{ext_l}")
+    print()
+    if not os.path.isdir(root):
+        print(color_text(f"  Not a directory: {root}", fg=RED))
+        return
+    if not search:
+        print(color_text("  Search text required.", fg=RED))
+        return
+
+    pattern = re.compile(re.escape(search), re.IGNORECASE)
+
+    plans = []                    # (path, text, match_count, [(line_no, line)])
+    scanned = 0
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if not d.startswith(".")
+                  and d.lower() not in EXCLUDED_DIR_NAMES]
+        for fn in sorted(fns):
+            if fn.startswith(".") or is_excluded_file(fn):
+                continue
+            # Never touch .bak backups (this feature creates them) unless
+            # .bak files were explicitly requested via the extension filter.
+            if ext_l != "bak" and fn.lower().endswith(".bak"):
+                continue
+            if ext_l and not fn.lower().endswith("." + ext_l):
+                continue
+            path = os.path.join(dp, fn)
+            try:
+                with open(path, "rb") as fh:
+                    if b"\x00" in fh.read(8192):
+                        continue              # binary — never touched
+                # surrogateescape + newline="" round-trips any byte sequence
+                # and line-ending style unchanged apart from the replacement.
+                with open(path, "r", encoding="utf-8",
+                          errors="surrogateescape", newline="") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            scanned += 1
+            if not pattern.search(text):
+                continue
+            hits = [(no, line) for no, line in enumerate(text.splitlines(), 1)
+                    if pattern.search(line)]
+            plans.append((path, text, len(pattern.findall(text)), hits))
+
+    if not plans:
+        print(color_text(f"  No matches found ({scanned:,} file(s) scanned).",
+                         fg=YELLOW))
+        return
+
+    # ---- Dry-run report: file, then line number + line per match ----------
+    width = get_width()
+    total = line_total = 0
+    for path, _text, count, hits in plans:
+        total += count
+        line_total += len(hits)
+        print(color_text(
+            f"  {path}  ({count} match{'es' if count != 1 else ''})",
+            fg=BRIGHT_CYAN, style=BOLD))
+        for no, line in hits:
+            plain = line.rstrip()
+            prefix = f"    {no:>6}: "
+            avail = max(20, width - len(prefix) - 1)
+            if len(plain) > avail:
+                plain = plain[:avail - 1] + "…"
+            shown = pattern.sub(
+                lambda m: f"{BRIGHT_RED}{BOLD}{m.group(0)}{RESET}", plain)
+            print(f"{DIM}{prefix}{RESET}{shown}")
+        print()
+
+    print(color_text(
+        f"  DRY RUN — {total:,} match(es) on {line_total:,} line(s) in "
+        f"{len(plans)} file(s). Nothing has been changed.",
+        fg=YELLOW, style=BOLD))
+
+    do_replace = False
+    make_bak = backup
+    if live_requested is None:                # interactive
+        do_replace = safe_confirm(
+            f"  Replace all {total:,} occurrence(s) in {len(plans)} file(s)?",
+            default=False)
+        if do_replace:
+            make_bak = safe_confirm(
+                "  Create a .bak backup of each file before replacing?",
+                default=True)
+    elif live_requested is True:              # CLI --apply
+        do_replace = True if assume_yes else safe_confirm(
+            f"  Replace all {total:,} occurrence(s) in {len(plans)} file(s)?",
+            default=False)
+    else:                                     # CLI dry run
+        print(color_text("  Re-run with --apply to perform the replacement.",
+                         fg=YELLOW))
+        return
+    if not do_replace:
+        print(color_text("  Cancelled — nothing changed.", fg=YELLOW))
+        return
+
+    ok = fail = 0
+    for path, text, _count, _hits in plans:
+        try:
+            if make_bak:
+                shutil.copy2(path, path + ".bak")
+            with open(path, "w", encoding="utf-8",
+                      errors="surrogateescape", newline="") as fh:
+                fh.write(pattern.sub(lambda m: replace, text))
+            ok += 1
+        except OSError as e:
+            fail += 1
+            print(color_text(f"  ✗ {path}: {e}", fg=RED))
+    print()
+    report_result(
+        fail == 0,
+        f"Replaced {total:,} occurrence(s) in {ok} file(s)."
+        + (" Backups saved with a .bak extension." if make_bak else ""),
+        f"Replaced in {ok} file(s), {fail} failed.")
+
+
 # =============================================================================
 # REMOVE  (dry-run by default)
 # =============================================================================
@@ -1236,6 +1699,799 @@ def _hash_file(path, chunk=1 << 20):
         return h.hexdigest()
     except OSError:
         return None
+
+
+# =============================================================================
+# CLEAN UP  (junk files, old log entries; dry-run by default)
+# =============================================================================
+LOG_PURGE_DIR   = os.path.expanduser("~/Documents/log")
+LOG_PURGE_DAYS  = 90
+_LOG_TS_RE      = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+
+
+def cleanup_junk_files(root, live_requested=None, assume_yes=False):
+    """Find every .DS_Store / desktop.ini under root (recursively, hidden
+    folders included) and remove them — DRY RUN preview + confirm, exactly
+    like the Remove actions."""
+    screen("Clean Up — Remove Junk Files")
+    print()
+    root = clean_path(root)
+    print(f"  {YELLOW}Root{RESET}: {root}    {YELLOW}Targets{RESET}: .DS_Store, desktop.ini\n")
+    if not os.path.isdir(root):
+        print(color_text(f"  Not a directory: {root}", fg=RED))
+        return
+    items = []
+    for dp, dns, fns in os.walk(root):
+        prune_dirs(dns)
+        for fn in fns:
+            if is_excluded_file(fn):
+                full = os.path.join(dp, fn)
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    size = 0
+                items.append((full, size, False))
+    items.sort(key=lambda i: i[0])
+    _finish_removal(items, live_requested, assume_yes=assume_yes)
+
+
+def _purge_scan_file(path, cutoff):
+    """Read one log file and split it at cutoff. Returns (kept_lines,
+    purge_count).
+
+    Block-aware: a line with a [YYYY-MM-DD HH:MM:SS] timestamp decides
+    keep/purge for itself AND every untimestamped line that follows it (an
+    entry's body and trailing blank line belong to its header). Lines before
+    any timestamp are kept."""
+    kept = []
+    purged = 0
+    keep_current = True
+    with open(path, "r", errors="replace") as fh:
+        for line in fh:
+            m = _LOG_TS_RE.search(line)
+            if m:
+                try:
+                    ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+                    keep_current = ts >= cutoff
+                except ValueError:
+                    keep_current = True
+            if keep_current:
+                kept.append(line)
+            else:
+                purged += 1
+    return kept, purged
+
+
+def cleanup_purge_logs(folder=LOG_PURGE_DIR, days=LOG_PURGE_DAYS,
+                       live_requested=None, assume_yes=False):
+    """Purge entries older than N days from every .log file in folder.
+    DRY RUN preview + confirm; a .bak backup of each changed file is written
+    before it is rewritten. Empty files after purging are preserved."""
+    screen("Clean Up — Purge Old Log Files")
+    print()
+    folder = clean_path(folder)
+    try:
+        days = max(0, int(days))
+    except (TypeError, ValueError):
+        days = LOG_PURGE_DAYS
+    cutoff = datetime.fromtimestamp(time.time() - days * 86400)
+    print(f"  {YELLOW}Log folder{RESET}  : {folder}")
+    print(f"  {YELLOW}Days to keep{RESET}: {days}")
+    print(f"  {YELLOW}Cutoff{RESET}      : entries before "
+          f"{cutoff.strftime('%-m/%-d/%y %-I:%M ') + cutoff.strftime('%p').lower()} are purged")
+    print()
+    if not os.path.isdir(folder):
+        print(color_text(f"  Not a directory: {folder}", fg=RED))
+        return
+
+    log_files = sorted(f for f in os.listdir(folder) if f.lower().endswith(".log"))
+    if not log_files:
+        print(color_text(f"  No .log files found in {folder}.", fg=YELLOW))
+        return
+
+    plans = []                       # (path, kept_lines, purge_count)
+    for fn in log_files:
+        path = os.path.join(folder, fn)
+        try:
+            kept, purge_count = _purge_scan_file(path, cutoff)
+        except OSError as e:
+            print(color_text(f"  ⚠ {fn}: {e}", fg=YELLOW))
+            continue
+        plans.append((path, kept, purge_count))
+
+    name_w = max([len(os.path.basename(p)) for p, _, _ in plans] + [len("Log File")])
+    name_w = min(name_w, 40)
+    print(color_text(f"  {'Log File':<{name_w}}  {'Purge':>8}  {'Keep':>8}  {'Size':>10}",
+                     fg=YELLOW, style=BOLD))
+    print(f"  {DIM}{'-' * name_w}  {'-' * 8}  {'-' * 8}  {'-' * 10}{RESET}")
+    total_purge = 0
+    for path, kept, purge_count in plans:
+        total_purge += purge_count
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        purge_disp = (color_text(f"{purge_count:>8,}", fg=RED, style=BOLD)
+                      if purge_count else f"{purge_count:>8,}")
+        print(f"  {WHITE}{os.path.basename(path)[:name_w].ljust(name_w)}{RESET}  "
+              f"{purge_disp}  {len(kept):>8,}  {fmt_size(size):>10}")
+
+    print()
+    if total_purge == 0:
+        print(color_text(f"  Nothing to purge — no entries older than {days} days.",
+                         fg=GREEN, style=BOLD))
+        return
+
+    do_purge = False
+    if live_requested is None:                # interactive
+        print(color_text("  This was a DRY RUN — nothing has been purged yet.",
+                         fg=YELLOW, style=BOLD))
+        do_purge = safe_confirm(f"  Actually purge {total_purge:,} old line(s) "
+                                f"from {len(plans)} file(s)?", default=False)
+    elif live_requested is True:              # CLI --delete
+        do_purge = True if assume_yes else safe_confirm(
+            f"  Purge {total_purge:,} old line(s) from {len(plans)} file(s)?", default=False)
+    else:                                     # CLI dry run
+        print(color_text("  DRY RUN — nothing purged. Re-run with --delete to purge.",
+                         fg=YELLOW, style=BOLD))
+        return
+    if not do_purge:
+        print(color_text("  Cancelled — nothing purged.", fg=YELLOW))
+        return
+
+    ok = fail = 0
+    for path, kept, purge_count in plans:
+        if purge_count == 0:
+            continue
+        try:
+            shutil.copy2(path, path + ".bak")
+            with open(path, "w") as fh:
+                fh.writelines(kept)
+            ok += 1
+        except OSError as e:
+            fail += 1
+            print(color_text(f"  ✗ {os.path.basename(path)}: {e}", fg=RED))
+    print()
+    report_result(fail == 0,
+                  f"Purged {total_purge:,} line(s) from {ok} file(s). "
+                  "Backups saved with a .bak extension.",
+                  f"Purged {ok} file(s), {fail} failed.")
+
+
+# =============================================================================
+# EJECT EXTERNAL DRIVES  (macOS)
+# =============================================================================
+def _external_drives():
+    """Scan /Volumes and return the mounted external drives as a list of
+    {identifier, name, size, mount_point} dicts (deduplicated by disk).
+
+    A volume counts as external when `diskutil info` reports Internal: No,
+    a Protocol of USB/Thunderbolt/SATA/FireWire, or Removable Media. Same
+    detection logic as the standalone ejectDrives.py script."""
+    drives = []
+    volumes_path = "/Volumes"
+    if not os.path.isdir(volumes_path):
+        return drives
+    for volume_name in sorted(os.listdir(volumes_path)):
+        volume_path = os.path.join(volumes_path, volume_name)
+        if not os.path.ismount(volume_path):
+            continue
+        try:
+            info_result = subprocess.run(["diskutil", "info", volume_path],
+                                         capture_output=True, text=True)
+        except OSError:
+            return drives                    # diskutil unavailable (not macOS)
+        if info_result.returncode != 0:
+            continue
+
+        is_external = False
+        disk_identifier = None
+        size = "—"
+        for line in info_result.stdout.split("\n"):
+            if "Protocol:" in line:
+                if line.split(":")[1].strip().lower() in ("usb", "thunderbolt",
+                                                          "sata", "firewire"):
+                    is_external = True
+            elif "Removable Media:" in line:
+                if "Removable" in line or "Yes" in line:
+                    is_external = True
+            elif "Internal:" in line:
+                if "No" in line:
+                    is_external = True
+            elif "Part of Whole:" in line:
+                disk_identifier = line.split(":")[1].strip()
+            elif "Device Identifier:" in line and not disk_identifier:
+                m = re.match(r"(disk\d+)", line.split(":")[1].strip())
+                if m:
+                    disk_identifier = m.group(1)
+            elif ("Disk Size:" in line or "Container Total Space:" in line
+                  or "Volume Total Space:" in line):
+                m = re.search(r"\((\d[\d,]*)\s*Bytes\)", line)
+                if m:
+                    size = fmt_size(int(m.group(1).replace(",", "")))
+
+        if is_external and disk_identifier:
+            drives.append({"identifier": disk_identifier, "name": volume_name,
+                           "size": size, "mount_point": volume_path})
+
+    # One entry per physical disk (a disk may mount several volumes)
+    seen = set()
+    unique = []
+    for d in drives:
+        if d["identifier"] not in seen:
+            seen.add(d["identifier"])
+            unique.append(d)
+    return unique
+
+
+def _eject_via_finder(volume_name):
+    """AppleScript fallback — same as clicking the eject button in Finder."""
+    script = f'tell application "Finder"\n    eject disk "{volume_name}"\nend tell'
+    try:
+        result = subprocess.run(["osascript", "-e", script],
+                                capture_output=True, text=True)
+    except OSError as e:
+        return False, str(e)
+    if result.returncode == 0:
+        return True, "Ejected via Finder"
+    return False, result.stderr.strip()
+
+
+def _eject_drive(drive, force=False):
+    """Eject one drive dict. force=True force-unmounts the whole disk first.
+    Returns (success, message)."""
+    identifier = drive["identifier"]
+    try:
+        if force:
+            unmount = subprocess.run(["diskutil", "unmountDisk", "force", identifier],
+                                     capture_output=True, text=True)
+            if unmount.returncode != 0:
+                return False, f"Force unmount failed: {unmount.stderr.strip()}"
+        result = subprocess.run(["diskutil", "eject", identifier],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        if not force:                         # Finder fallback (non-force only)
+            ok, msg = _eject_via_finder(drive["name"])
+            if ok:
+                return True, msg
+        return False, result.stderr.strip()
+    except OSError as e:
+        return False, str(e)
+
+
+def _print_drive_list(drives):
+    name_w = max([len(d["name"]) for d in drives] + [4])
+    size_w = max([len(d["size"]) for d in drives] + [4])
+    print(color_text(f"  {'#':>2}  {'Name':<{name_w}}  {'Size':>{size_w}}  Mount Point",
+                     fg=WHITE, style=BOLD))
+    print(f"  {'-' * 2}  {'-' * name_w}  {'-' * size_w}  {'-' * 20}")
+    for i, d in enumerate(drives, 1):
+        print(f"  {i:>2}  {d['name']:<{name_w}}  {d['size']:>{size_w}}  "
+              f"{DIM}{d['mount_point']}{RESET}")
+
+
+def _eject_loop(drives, force=False):
+    """Eject each drive with a per-drive status line.
+    Returns (ok_count, failed_drives)."""
+    ok = 0
+    failed = []
+    for d in drives:
+        verb = "Force ejecting" if force else "Ejecting"
+        sys.stdout.write(color_text(f"  {verb} {d['name']}... ", fg=CYAN))
+        sys.stdout.flush()
+        success, msg = _eject_drive(d, force=force)
+        if success:
+            print(color_text("Success", fg=BRIGHT_GREEN, style=BOLD))
+            ok += 1
+        else:
+            print(color_text("Failed", fg=BRIGHT_RED, style=BOLD))
+            if msg:
+                print(color_text(f"    {msg}", fg=RED))
+            failed.append(d)
+    return ok, failed
+
+
+def _eject_screen(live_requested, assume_yes, force):
+    screen("Eject All External Drives")
+    print()
+    if sys.platform != "darwin":
+        print(color_text("  Eject uses diskutil and is only available on macOS.", fg=RED))
+        return
+
+    drives = _external_drives()
+    if not drives:
+        print(color_text("  No external drives found.", fg=YELLOW, style=BOLD))
+        return
+
+    _print_drive_list(drives)
+    print()
+
+    do_eject = False
+    if live_requested is None or (live_requested is True and not assume_yes):
+        do_eject = safe_confirm(f"  Eject all {len(drives)} drive(s)?", default=False)
+    else:
+        do_eject = True                       # CLI --yes
+    if not do_eject:
+        print(color_text("  Cancelled — nothing ejected.", fg=YELLOW))
+        return
+
+    print()
+    ok, failed = _eject_loop(drives, force=force)
+
+    # Offer to force-eject anything that would not let go (Spotlight, etc.)
+    if failed and not force:
+        print()
+        force_it = (True if assume_yes and live_requested is True
+                    else safe_confirm(f"  Force eject the {len(failed)} failed drive(s)?",
+                                      default=False))
+        if force_it:
+            print()
+            ok2, failed = _eject_loop(failed, force=True)
+            ok += ok2
+
+    print()
+    report_result(not failed,
+                  f"Ejected {ok} drive(s).",
+                  f"Ejected {ok} drive(s), {len(failed)} failed — "
+                  "close any apps using the drive(s) and try again.")
+
+
+def eject_external_drives(live_requested=None, assume_yes=False, force=False):
+    """List the mounted external drives and eject them all after a confirm
+    (macOS). Failures offer a force eject. The screen output is also appended
+    to ~/Documents/log/fm.log."""
+    with _ActivityLog():
+        _eject_screen(live_requested, assume_yes, force)
+
+
+# =============================================================================
+# MONITOR FILE ACTIVITY  (real-time, stdlib polling)
+# =============================================================================
+MONITOR_CSV          = os.path.expanduser("~/Documents/log/fmMonitor.csv")
+MONITOR_POLL_SECONDS = 1.0
+
+
+def _parse_ext_filter(raw):
+    """Normalize an extension filter ('jpg, .PNG' or ['jpg','png']) to a
+    lowercase set without dots. Empty/blank input -> empty set (= all files)."""
+    if not raw:
+        return set()
+    parts = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    return {str(p).strip().lstrip(".").lower() for p in parts if str(p).strip()}
+
+
+def _monitor_snapshot(root, recursive, exts):
+    """One poll of the watched folder: {relative path: (mtime, size)}.
+
+    Hidden files/folders ARE included (their activity is often the point);
+    junk files (.DS_Store, desktop.ini) and $RECYCLE.BIN are skipped.
+    exts: set of extensions to watch (empty = every file)."""
+    snap = {}
+
+    def want(fn):
+        if is_excluded_file(fn):
+            return False
+        return not exts or os.path.splitext(fn)[1][1:].lower() in exts
+
+    if recursive:
+        for dp, dns, fns in os.walk(root):
+            prune_dirs(dns)
+            for fn in fns:
+                if not want(fn):
+                    continue
+                full = os.path.join(dp, fn)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                snap[os.path.relpath(full, root)] = (st.st_mtime, st.st_size)
+    else:
+        try:
+            names = os.listdir(root)
+        except OSError:
+            return snap
+        for fn in names:
+            full = os.path.join(root, fn)
+            if not want(fn) or not os.path.isfile(full):
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            snap[fn] = (st.st_mtime, st.st_size)
+    return snap
+
+
+def _diff_snapshots(old, new):
+    """Compare two snapshots. Returns [(event, relpath, size)] sorted by
+    path; event is CREATED / MODIFIED / DELETED."""
+    events = []
+    for rel, meta in new.items():
+        if rel not in old:
+            events.append(("CREATED", rel, meta[1]))
+        elif meta != old[rel]:
+            events.append(("MODIFIED", rel, meta[1]))
+    for rel in old:
+        if rel not in new:
+            events.append(("DELETED", rel, None))
+    return sorted(events, key=lambda e: e[1])
+
+
+def _monitor_ts():
+    """Event timestamp in the display format m/d/yy h:mm:ss am."""
+    now = datetime.now()
+    return now.strftime("%-m/%-d/%y %-I:%M:%S ") + now.strftime("%p").lower()
+
+
+class _MonitorLog:
+    """Real-time event writer. output='log' appends lines to the FM activity
+    log (~/Documents/log/fm.log); output='csv' appends rows to fmMonitor.csv
+    in the same folder (header written when the file is new). Every event is
+    flushed immediately so `tail -f` tracks the screen live. Write failures
+    never interrupt monitoring."""
+
+    def __init__(self, output, folder, recursive, exts):
+        self.output = output
+        self.path = MONITOR_CSV if output == "csv" else ACTIVITY_LOG
+        self._fh = None
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+            self._fh = open(self.path, "a", newline="" if output == "csv" else None)
+            if output == "csv":
+                self._csv = csv.writer(self._fh)
+                if is_new:
+                    self._csv.writerow(["Timestamp", "Filename", "Folder", "Event"])
+            else:
+                ext_disp = ", ".join(sorted(exts)) if exts else "all"
+                self._fh.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
+                self._fh.write(f"Monitor File Activity — {folder}\n")
+                self._fh.write(f"Recursive: {'Yes' if recursive else 'No'}   "
+                               f"Extensions: {ext_disp}\n")
+            self._fh.flush()
+        except OSError:
+            self._fh = None
+        self.opened = self._fh is not None
+
+    def event(self, ts, event, rel, folder):
+        if not self._fh:
+            return
+        try:
+            if self.output == "csv":
+                self._csv.writerow([ts, os.path.basename(rel),
+                                    os.path.join(folder, os.path.dirname(rel)).rstrip("/"),
+                                    event.lower()])
+            else:
+                self._fh.write(f"{ts}  {event:<9} {rel}\n")
+            self._fh.flush()
+        except OSError:
+            pass
+
+    def close(self, summary=""):
+        if not self._fh:
+            return
+        try:
+            if self.output == "log":
+                if summary:
+                    self._fh.write(summary + "\n")
+                self._fh.write("\n")
+            self._fh.flush()
+            self._fh.close()
+        except OSError:
+            pass
+        self._fh = None
+
+
+_MONITOR_EVENT_COLORS = {"CREATED": GREEN, "MODIFIED": YELLOW, "DELETED": RED}
+
+
+def monitor_activity(folder, recursive=True, exts=None, output="log",
+                     profile_name=None):
+    """Watch a folder for file activity (created / modified / deleted) and
+    report each event in real time — on screen and to fm.log (or
+    fmMonitor.csv). Polls once a second using snapshot diffs (no third-party
+    packages). [Q/ESC] stops and returns to the menu (Ctrl-C non-TTY)."""
+    exts = _parse_ext_filter(exts)
+    screen("Monitor File Activity")
+    print()
+    if profile_name:
+        print(f"  {YELLOW}Profile{RESET}   : {profile_name}")
+    print(f"  {YELLOW}Folder{RESET}    : {folder}")
+    print(f"  {YELLOW}Recursive{RESET} : {'Yes' if recursive else 'No'}")
+    print(f"  {YELLOW}Extensions{RESET}: {', '.join(sorted(exts)) if exts else 'all files'}")
+    log_disp = MONITOR_CSV.replace(os.path.expanduser('~'), '~') if output == "csv" \
+        else ACTIVITY_LOG.replace(os.path.expanduser('~'), '~')
+    print(f"  {YELLOW}Logging to{RESET}: {log_disp}")
+    print()
+
+    if not os.path.isdir(folder):
+        print(color_text(f"  Not a directory: {folder}", fg=RED))
+        return
+
+    is_tty = sys.stdin.isatty()
+    stop_hint = "[Q/ESC] Stop" if is_tty else "Ctrl-C to stop"
+    print(color_text(f"  Monitoring... {stop_hint}. Events appear below as they happen.",
+                     fg=CYAN, style=BOLD))
+    print()
+
+    counts = {"CREATED": 0, "MODIFIED": 0, "DELETED": 0}
+    mlog = _MonitorLog(output, folder, recursive, exts)
+    if mlog._fh is None:
+        print(color_text(f"  ⚠ Could not open {log_disp} — events will show on screen only.",
+                         fg=YELLOW))
+        print()
+    baseline = _monitor_snapshot(folder, recursive, exts)
+
+    def poll_once():
+        nonlocal baseline
+        snap = _monitor_snapshot(folder, recursive, exts)
+        for event, rel, size in _diff_snapshots(baseline, snap):
+            ts = _monitor_ts()
+            counts[event] += 1
+            colored = color_text(f"{event:<9}", fg=_MONITOR_EVENT_COLORS[event], style=BOLD)
+            size_disp = f"  {DIM}({fmt_size(size)}){RESET}" if size is not None else ""
+            print(f"  {DIM}{ts}{RESET}  {colored} {rel}{size_disp}")
+            mlog.event(ts, event, rel, folder)
+        baseline = snap
+
+    try:
+        if is_tty:
+            import termios, tty, select
+            fd = sys.stdin.fileno()
+            old_attr = termios.tcgetattr(fd)
+            try:
+                tty.setcbreak(fd)
+                while True:
+                    r, _, _ = select.select([fd], [], [], MONITOR_POLL_SECONDS)
+                    if r:
+                        ch = os.read(fd, 1)
+                        if ch in (b"q", b"Q", b"\x1b"):
+                            break
+                    poll_once()
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_attr)
+        else:
+            while True:
+                time.sleep(MONITOR_POLL_SECONDS)
+                poll_once()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        total = sum(counts.values())
+        summary = (f"Stopped — {total} event(s): {counts['CREATED']} created, "
+                   f"{counts['MODIFIED']} modified, {counts['DELETED']} deleted.")
+        mlog.close(summary)
+
+    print()
+    print(color_text(f"  {summary}", fg=WHITE, style=BOLD))
+    if mlog.opened:
+        print(f"  {DIM}Activity logged to {log_disp}{RESET}")
+
+
+# =============================================================================
+# SYNC  (one-way push; dry-run by default)
+# =============================================================================
+def _load_config_profiles(key):
+    """Return (profiles, error) — a profile list (e.g. syncProfiles,
+    monitorProfiles) from fmConfig.json. A missing config file or a missing
+    key simply means no profiles (empty list, no error); a broken file
+    returns an error string."""
+    try:
+        with open(CONFIG_FILE, "r") as fh:
+            cfg = json.load(fh)
+    except OSError:
+        return [], ""
+    except ValueError as e:
+        return [], f"fmConfig.json is not valid JSON: {e}"
+    profs = cfg.get(key, [])
+    if not isinstance(profs, list):
+        return [], f"fmConfig.json: {key} must be a list"
+    return [p for p in profs if isinstance(p, dict)], ""
+
+
+def _load_sync_profiles():
+    return _load_config_profiles("syncProfiles")
+
+
+def _load_monitor_profiles():
+    return _load_config_profiles("monitorProfiles")
+
+
+def _scan_sync_side(root, recursive, exclude_hidden):
+    """Scan one side of a sync: {relative path: (size, mtime)}.
+
+    Junk files (.DS_Store, desktop.ini) and excluded folders ($RECYCLE.BIN)
+    are always skipped; hidden files/folders only when exclude_hidden."""
+    out = {}
+    if recursive:
+        for dp, dns, fns in os.walk(root):
+            prune_dirs(dns)
+            if exclude_hidden:
+                dns[:] = [d for d in dns if not d.startswith(".")]
+            for fn in fns:
+                if is_excluded_file(fn):
+                    continue
+                if exclude_hidden and fn.startswith("."):
+                    continue
+                full = os.path.join(dp, fn)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                out[os.path.relpath(full, root)] = (st.st_size, st.st_mtime)
+    else:
+        try:
+            names = os.listdir(root)
+        except OSError:
+            return out
+        for fn in names:
+            full = os.path.join(root, fn)
+            if not os.path.isfile(full) or is_excluded_file(fn):
+                continue
+            if exclude_hidden and fn.startswith("."):
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out[fn] = (st.st_size, st.st_mtime)
+    return out
+
+
+def _sync_plan(src_map, dst_map, conflict):
+    """Decide what to push src → dst. Returns (new_rels, upd_rels).
+
+    A file that exists on both sides is only copied when the source wins the
+    conflict rule: 'newest' = source modified time is newer (1s tolerance for
+    coarse filesystem timestamps), 'largest' = source is bigger."""
+    new_rels, upd_rels = [], []
+    for rel in sorted(src_map):
+        s_size, s_mtime = src_map[rel]
+        if rel not in dst_map:
+            new_rels.append(rel)
+            continue
+        d_size, d_mtime = dst_map[rel]
+        if conflict == "largest":
+            if s_size > d_size:
+                upd_rels.append(rel)
+        else:                                   # newest (default)
+            if s_mtime > d_mtime + 1:
+                upd_rels.append(rel)
+    return new_rels, upd_rels
+
+
+def _fmt_mtime(ts):
+    """Modified time in the display format m/d/yy h:mm am."""
+    try:
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime("%-m/%-d/%y %-I:%M ") + dt.strftime("%p").lower()
+    except (OSError, OverflowError, ValueError):
+        return "—"
+
+
+def _sync_screen(folder_a, folder_b, direction, recursive, conflict,
+                 exclude_hidden, live_requested, assume_yes, profile_name):
+    screen("Sync Folders")
+    print()
+    if direction == "b2a":
+        src, dst, src_lbl, dst_lbl = folder_b, folder_a, "B", "A"
+    else:
+        src, dst, src_lbl, dst_lbl = folder_a, folder_b, "A", "B"
+
+    if profile_name:
+        print(f"  {YELLOW}Profile{RESET}  : {profile_name}")
+    print(f"  {YELLOW}Folder A{RESET} : {folder_a}")
+    print(f"  {YELLOW}Folder B{RESET} : {folder_b}")
+    print(f"  {YELLOW}Direction{RESET}: {src_lbl} → {dst_lbl}  (push new/updated files from {src_lbl} to {dst_lbl})")
+    print(f"  {YELLOW}Options{RESET}  : Recursive: {'Yes' if recursive else 'No'}   "
+          f"Conflict: {'Newest' if conflict == 'newest' else 'Largest'} wins   "
+          f"Hidden files: {'Excluded' if exclude_hidden else 'Included'}")
+    print()
+
+    for path, lbl in ((folder_a, "A"), (folder_b, "B")):
+        if not os.path.isdir(path):
+            print(color_text(f"  Folder {lbl} is not a directory: {path}", fg=RED))
+            return
+
+    src_map = _scan_sync_side(src, recursive, exclude_hidden)
+    dst_map = _scan_sync_side(dst, recursive, exclude_hidden)
+    new_rels, upd_rels = _sync_plan(src_map, dst_map, conflict)
+
+    if not new_rels and not upd_rels:
+        print(color_text(f"  Nothing to copy — {dst_lbl} already has every "
+                         f"new/updated file from {src_lbl}.", fg=GREEN, style=BOLD))
+        print(f"  {DIM}Scanned {len(src_map):,} file(s) in {src_lbl}, "
+              f"{len(dst_map):,} in {dst_lbl}.{RESET}")
+        return
+
+    total = len(new_rels) + len(upd_rels)
+    total_bytes = sum(src_map[r][0] for r in new_rels + upd_rels)
+    print(color_text(f"  {len(new_rels)} new, {len(upd_rels)} updated — "
+                     f"{fmt_size(total_bytes)} to copy from {src_lbl} to {dst_lbl}:",
+                     fg=WHITE, style=BOLD))
+    print()
+    print(color_text(f"  {'Action':<7} {'Size':>10}  {'Modified':<17} File",
+                     fg=WHITE, style=BOLD))
+    print(f"  {'-' * 7} {'-' * 10}  {'-' * 17} {'-' * 30}")
+    upd_set = set(upd_rels)
+    for rel in sorted(new_rels + upd_rels):
+        s_size, s_mtime = src_map[rel]
+        if rel in upd_set:
+            act = color_text(f"{'UPDATE':<7}", fg=YELLOW)
+            d_size, d_mtime = dst_map[rel]
+            tail = f"  {DIM}(replaces {fmt_size(d_size)}, {_fmt_mtime(d_mtime)}){RESET}"
+        else:
+            act = color_text(f"{'NEW':<7}", fg=GREEN)
+            tail = ""
+        print(f"  {act} {fmt_size(s_size):>10}  {_fmt_mtime(s_mtime):<17} {rel}{tail}")
+
+    # Copy only on explicit opt-in — same safety model as Remove.
+    print()
+    do_copy = False
+    if live_requested is None:                # interactive
+        print(color_text("  This was a DRY RUN — nothing has been copied yet.",
+                         fg=YELLOW, style=BOLD))
+        do_copy = safe_confirm(f"  Actually copy these {total} file(s) from "
+                               f"{src_lbl} to {dst_lbl}?", default=False)
+    elif live_requested is True:              # CLI --copy
+        do_copy = True if assume_yes else safe_confirm(
+            f"  Copy these {total} file(s) from {src_lbl} to {dst_lbl}?", default=False)
+    else:                                     # CLI dry run
+        print(color_text("  DRY RUN — nothing copied. Re-run with --copy to sync.",
+                         fg=YELLOW, style=BOLD))
+        return
+
+    if not do_copy:
+        print(color_text("  Cancelled — nothing copied.", fg=YELLOW))
+        return
+
+    ok = fail = 0
+    copied_bytes = 0
+    for rel in new_rels + upd_rels:
+        s_path = os.path.join(src, rel)
+        d_path = os.path.join(dst, rel)
+        try:
+            os.makedirs(os.path.dirname(d_path), exist_ok=True)
+            shutil.copy2(s_path, d_path)      # copy2 preserves mtime for future 'newest' runs
+            ok += 1
+            copied_bytes += src_map[rel][0]
+        except OSError as e:
+            fail += 1
+            print(color_text(f"  ✗ {rel}: {e}", fg=RED))
+    print()
+    report_result(fail == 0,
+                  f"Copied {ok} file(s) ({fmt_size(copied_bytes)}) from {src_lbl} to {dst_lbl}.",
+                  f"Copied {ok} file(s) ({fmt_size(copied_bytes)}), {fail} failed.")
+
+
+def sync_folders(folder_a, folder_b, direction, recursive=True,
+                 conflict="newest", exclude_hidden=True, live_requested=None,
+                 assume_yes=False, profile_name=None):
+    """One-way folder sync: push new/updated files from one folder into the
+    other (A → B or B → A). Nothing is ever deleted, and nothing is copied
+    until explicitly confirmed (interactive y, or --copy on the CLI) — the
+    preview is a DRY RUN. The screen output is also appended to
+    ~/Documents/log/fm.log."""
+    with _ActivityLog():
+        _sync_screen(folder_a, folder_b, direction, recursive, conflict,
+                     exclude_hidden, live_requested, assume_yes, profile_name)
+
+
+def _run_sync_profile(pr, live_requested=None, assume_yes=False):
+    """Run one syncProfiles entry from fmConfig.json (defaults: AtoB,
+    recursive, newest wins, hidden excluded). Still previews + confirms."""
+    folder_a = clean_path(str(pr.get("folderA", "")))
+    folder_b = clean_path(str(pr.get("folderB", "")))
+    direction = "b2a" if str(pr.get("direction", "AtoB")).lower() in ("btoa", "b2a") else "a2b"
+    conflict = "largest" if str(pr.get("conflict", "newest")).lower() == "largest" else "newest"
+    sync_folders(folder_a, folder_b, direction,
+                 recursive=bool(pr.get("recursive", True)),
+                 conflict=conflict,
+                 exclude_hidden=bool(pr.get("excludeHidden", True)),
+                 live_requested=live_requested, assume_yes=assume_yes,
+                 profile_name=pr.get("name") or "(unnamed profile)")
+    pause_return()
 
 
 # =============================================================================
@@ -1657,7 +2913,8 @@ def read_key():
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def render_menu(subtitle, options, is_main=False, intro=None, outro=None):
+def render_menu(subtitle, options, is_main=False, intro=None, outro=None,
+                help_note=None):
     """Render a CB9 menu and return the user's choice.
 
     Navigation (interactive TTY):
@@ -1665,10 +2922,12 @@ def render_menu(subtitle, options, is_main=False, intro=None, outro=None):
       • Typing a number also selects that option (multi-digit buffered).
       • H shows Help; Q or ESC go Back (submenu) / Exit (main) — instant.
 
-    options : list of (label, description) tuples. Description is shown by [H].
-    intro   : optional context line shown above the options.
-    outro   : optional context line(s) — str or list of str — shown below the
-              options (e.g. the folders already entered).
+    options   : list of (label, description) tuples. Description is shown by [H].
+    intro     : optional context line shown above the options.
+    outro     : optional context line(s) — str or list of str — shown below the
+                options (e.g. the folders already entered).
+    help_note : optional (label, description) tuple shown at the bottom of the
+                [H] Help screen after the option descriptions (e.g. logging info).
     Returns str(number) for a selection, or 'back' (submenu) / 'quit' (main).
     Falls back to line input when stdin is not an interactive TTY (piped/CLI).
     """
@@ -1676,7 +2935,8 @@ def render_menu(subtitle, options, is_main=False, intro=None, outro=None):
     if n == 0:
         return "back"
     if not sys.stdin.isatty():
-        return _render_menu_lines(subtitle, options, is_main, intro, outro)
+        return _render_menu_lines(subtitle, options, is_main, intro, outro,
+                                  help_note)
 
     back_word = "Exit" if is_main else "Back"
     selected = 0        # highlighted row (starts on option 1, the default)
@@ -1710,7 +2970,7 @@ def render_menu(subtitle, options, is_main=False, intro=None, outro=None):
         elif key == "ESC" or key in ("q", "Q"):
             return "quit" if is_main else "back"
         elif key in ("h", "H"):
-            show_menu_help(subtitle, options)
+            show_menu_help(subtitle, options, help_note)
         elif key == "BACKSPACE":
             buf = buf[:-1]
         elif key and key.isdigit():
@@ -1730,7 +2990,8 @@ def _print_menu_outro(outro):
     print()
 
 
-def _render_menu_lines(subtitle, options, is_main, intro, outro=None):
+def _render_menu_lines(subtitle, options, is_main, intro, outro=None,
+                       help_note=None):
     """Line-based menu fallback for non-TTY stdin (piped input / automation).
     Preserves numbered selection, Enter=default option 1, H help, Q/ESC back."""
     default = "" if is_main else "1"
@@ -1755,7 +3016,7 @@ def _render_menu_lines(subtitle, options, is_main, intro, outro=None):
         if choice == "q":
             return "quit" if is_main else "back"
         if choice == "h":
-            show_menu_help(subtitle, options)
+            show_menu_help(subtitle, options, help_note)
 
 
 def render_multiselect(subtitle, options, intro=None):
@@ -1822,12 +3083,23 @@ def render_multiselect(subtitle, options, intro=None):
         # anything else: ignore and redraw
 
 
-def show_menu_help(subtitle, options):
+def _print_help_desc(desc, width):
+    """Word-wrap and print one Help description block (dim, indented)."""
+    for para in desc.split("\n"):
+        hang = "       " if para.lstrip().startswith(("•", "-")) else "     "
+        wrapped = textwrap.fill(para.strip(), width=width,
+                                initial_indent="     ", subsequent_indent=hang)
+        print(f"{DIM}{wrapped}{RESET}")
+
+
+def show_menu_help(subtitle, options, note=None):
     """Show a Help screen describing every option in the current menu.
 
     Descriptions are word-wrapped to the terminal width. A description may
     contain explicit newlines to force line breaks (e.g. for bullet lists);
     a line starting with a bullet keeps its hanging indent when it wraps.
+    note : optional (label, description) tuple printed after the options —
+           an unnumbered extra section (e.g. where activity is logged).
     """
     screen(f"{subtitle} — Help")
     print()
@@ -1835,11 +3107,13 @@ def show_menu_help(subtitle, options):
     for i, (label, desc) in enumerate(options, 1):
         print(f"  {color_text(f'{i}. {label}', fg=WHITE, style=BOLD)}")
         if desc:
-            for para in desc.split("\n"):
-                hang = "       " if para.lstrip().startswith(("•", "-")) else "     "
-                wrapped = textwrap.fill(para.strip(), width=width,
-                                        initial_indent="     ", subsequent_indent=hang)
-                print(f"{DIM}{wrapped}{RESET}")
+            _print_help_desc(desc, width)
+        print()
+    if note:
+        note_label, note_desc = note
+        print(f"  {color_text(note_label, fg=WHITE, style=BOLD)}")
+        if note_desc:
+            _print_help_desc(note_desc, width)
         print()
     standard_footer("[Any key] Back to menu")
     sys.stdout.write(color_text(" Option: ", fg=CYAN, style=BOLD)); sys.stdout.flush()
@@ -1912,24 +3186,32 @@ def compare_menu():
 
 def display_menu():
     options = [
-        ("Alphabetical",
-         "List the subfolders sorted A→Z by name. Each row shows the folder, its "
-         "size (human-readable), the exact byte count, and how many files it "
-         "contains; a TOTAL row sums them. Best when you know the folder name "
-         "you're looking for."),
-        ("By Size (largest first)",
+        ("All Drives",
+         "Size and free space of every mounted drive — the boot volume plus "
+         "each drive under /Volumes. Shows Size, Used, Free, and Use% per "
+         "drive (Use% turns yellow at 75% and red at 90%). Free is the space "
+         "actually available to you, matching Finder's Available figure."),
+        ("Subfolders Alphabetically",
+         "Enter a folder; its subfolders are listed sorted A→Z by name. Each "
+         "row shows the folder, its size (human-readable), the exact byte "
+         "count, and how many files it contains; a TOTAL row sums them. Best "
+         "when you know the folder name you're looking for."),
+        ("Subfolders by Size (largest first)",
          "Same columns, but sorted by total size with the biggest folder first — "
          "the quickest way to see what is using the most space."),
     ]
     while True:
-        ch = render_menu("Display — Folder Sizes", options,
-                         intro="Shows each subfolder's size, byte count, and file count.")
+        ch = render_menu("Display", options,
+                         intro="Drive space · subfolder sizes, byte counts, and file counts.")
         if ch == "back":
             return
+        if ch == "1":
+            display_all_drives()
+            continue
         folder = ask_folder("Folder to measure", default=os.getcwd())
         if not folder:
             pause_return(); continue
-        display_folder_sizes(folder, "size" if ch == "2" else "alpha")
+        display_folder_sizes(folder, "size" if ch == "3" else "alpha")
 
 
 def _pick_missing_mode(folder_a, folder_b, subtitle="Find Missing by Filename — Show"):
@@ -1996,6 +3278,16 @@ def find_menu():
          "obvious. Enter two folders, then choose In 1st folder only / In 2nd "
          "folder only / In either folder. Nothing is changed; results are "
          "just listed."),
+        ("Find & Replace",
+         "Enter a folder, the text to find, the replacement text, and an "
+         "optional file extension. Every text file under the folder is "
+         "scanned recursively (hidden files/folders and binary files are "
+         "skipped); matching is literal and case-insensitive. ALWAYS a dry "
+         "run first — every match is listed with its file, line number, and "
+         "the line with the matched text highlighted, and nothing is "
+         "touched. Then confirm [y/N] to replace every occurrence (you are "
+         "also asked whether to save a .bak backup of each file first), or "
+         "answer No to exit with nothing changed."),
     ]
     while True:
         ch = render_menu("Find", options)
@@ -2029,6 +3321,18 @@ def find_menu():
             if mode is None:
                 continue
             find_missing_by_filename(a, b, mode, match_size)
+            continue
+        if ch == "6":
+            root = ask_folder("Folder to search")
+            if not root:
+                pause_return(); continue
+            search = ask("Text to find")
+            if not search:
+                print(color_text("  Search text required — cancelled.", fg=YELLOW))
+                pause_return(); continue
+            replace = ask("Replace with (blank = remove the text)")
+            ext = ask("File extension (optional, e.g. php)")
+            find_and_replace(root, search, replace, ext or None)
             continue
 
         # Find Files — pick one or more criteria, then prompt for each value.
@@ -2142,6 +3446,205 @@ def remove_menu():
                 remove_folders_by_name(root, pat, live_requested=None)
 
 
+def _monitor_output_choice():
+    """Ask where monitor events should be logged. Returns 'log' | 'csv' | None."""
+    log_disp = ACTIVITY_LOG.replace(os.path.expanduser("~"), "~")
+    csv_disp = MONITOR_CSV.replace(os.path.expanduser("~"), "~")
+    options = [
+        (f"FM activity log — {log_disp}",
+         "Each event is appended to the shared FM activity log as a plain "
+         "timestamped line, right below the session header. Everything FM "
+         "does stays in one log."),
+        (f"CSV file — {csv_disp}",
+         "Each event is appended as a CSV row (Timestamp, Filename, Folder, "
+         "Event) — easy to open in a spreadsheet or parse. The header row is "
+         "written when the file is first created; sessions append."),
+    ]
+    ch = render_menu("Monitor — Log Destination", options)
+    if ch == "back":
+        return None
+    return "log" if ch == "1" else "csv"
+
+
+def _monitor_interactive():
+    """Interactive Monitor — ask for the folder and options, then watch it."""
+    screen("Monitor File Activity")
+    print()
+    folder = ask_folder("Folder to monitor")
+    if not folder:
+        pause_return(); return
+    recursive = safe_confirm("  Include subfolders (recursive)?", default=True)
+    ext_raw = ask("File extensions to watch (comma-separated, blank = all)")
+    output = _monitor_output_choice()
+    if output is None:
+        return
+    monitor_activity(folder, recursive, ext_raw, output)
+    pause_return()
+
+
+def _run_monitor_profile(pr):
+    """Run one monitorProfiles entry from fmConfig.json (defaults: recursive,
+    all extensions, log output)."""
+    folder = clean_path(str(pr.get("folder", "")))
+    output = "csv" if str(pr.get("output", "log")).lower() == "csv" else "log"
+    monitor_activity(folder,
+                     recursive=bool(pr.get("recursive", True)),
+                     exts=pr.get("extensions", ""),
+                     output=output,
+                     profile_name=pr.get("name") or "(unnamed profile)")
+    pause_return()
+
+
+def monitor_menu():
+    profile_note = (
+        "Monitor Profiles (fmConfig.json)",
+        "Saved monitor setups appear as options above Interactive Monitor. Add "
+        "them to fmConfig.json as a monitorProfiles list; each profile supports:\n"
+        "• name — the label shown in this menu\n"
+        "• folder — the folder to watch (~ is expanded)\n"
+        "• recursive — true/false (default true)\n"
+        "• extensions — extensions to watch, e.g. \"jpg,png\" or a list "
+        "(default: all files)\n"
+        "• output — log (fm.log) or csv (fmMonitor.csv); default log\n"
+        "Monitoring runs until you press [Q/ESC].")
+    while True:
+        profiles, perr = _load_monitor_profiles()
+        options = []
+        for pr in profiles:
+            name = pr.get("name") or "(unnamed profile)"
+            exts = _parse_ext_filter(pr.get("extensions", ""))
+            options.append((
+                f"Profile: {name}",
+                f"Watch this saved profile's folder for created/modified/deleted "
+                f"files:\n"
+                f"• Folder — {pr.get('folder', '?')}\n"
+                f"• Recursive: {'Yes' if pr.get('recursive', True) else 'No'}   "
+                f"Extensions: {', '.join(sorted(exts)) if exts else 'all'}   "
+                f"Output: {'CSV' if str(pr.get('output', 'log')).lower() == 'csv' else 'fm.log'}\n"
+                "Runs until you press [Q/ESC]."))
+        options.append((
+            "Interactive Monitor — enter a folder & options",
+            "Enter the folder to watch, whether to include subfolders (default "
+            "Yes), an optional extension filter (e.g. jpg, png — blank watches "
+            "everything), and where to log (fm.log or fmMonitor.csv). Every "
+            "created, modified, or deleted file then appears on screen and in "
+            "the log in real time until you press [Q/ESC]."))
+        ch = render_menu("Monitor File Activity", options,
+                         outro=(f"⚠ {perr}" if perr else None),
+                         help_note=profile_note)
+        if ch == "back":
+            return
+        if int(ch) <= len(profiles):
+            _run_monitor_profile(profiles[int(ch) - 1])
+        else:
+            _monitor_interactive()
+
+
+def _sync_interactive():
+    """Interactive Sync — ask for the two folders, the direction, and the
+    options, then run the preview/confirm sync."""
+    screen("Sync Folders")
+    print()
+    folder_a = ask_folder("Folder A")
+    if not folder_a:
+        pause_return(); return
+    folder_b = ask_folder("Folder B")
+    if not folder_b:
+        pause_return(); return
+
+    dir_options = [
+        ("Push new/updated files from A → B",
+         "Folder A is the source. Files that exist only in A are copied into B, "
+         "and files existing on both sides are copied when A's copy wins the "
+         "conflict rule you pick next. Folder B is never read from — nothing in "
+         "A changes, and nothing is ever deleted."),
+        ("Push new/updated files from B → A",
+         "Folder B is the source. Files that exist only in B are copied into A, "
+         "and files existing on both sides are copied when B's copy wins the "
+         "conflict rule you pick next. Folder A is never read from — nothing in "
+         "B changes, and nothing is ever deleted."),
+    ]
+    ch = render_menu("Sync — Direction", dir_options,
+                     outro=[f"Folder A - {folder_a}", f"Folder B - {folder_b}"])
+    if ch == "back":
+        return
+    direction = "a2b" if ch == "1" else "b2a"
+
+    conflict_options = [
+        ("Choose the newest  — copy only when the source file is newer",
+         "When a file exists in both folders, its modified times are compared "
+         "and the source copy is pushed only if it is newer than the "
+         "destination copy. The usual choice for keeping a backup current."),
+        ("Choose the largest — copy only when the source file is larger",
+         "When a file exists in both folders, their sizes are compared and the "
+         "source copy is pushed only if it is larger than the destination "
+         "copy. Useful when bigger means better (e.g. re-exported media)."),
+    ]
+    ch = render_menu("Sync — If a File Exists on Both Sides", conflict_options,
+                     outro=[f"Folder A - {folder_a}", f"Folder B - {folder_b}"])
+    if ch == "back":
+        return
+    conflict = "newest" if ch == "1" else "largest"
+
+    recursive = safe_confirm("  Include subfolders (recursive)?", default=True)
+    exclude_hidden = safe_confirm("  Exclude hidden files?", default=True)
+
+    sync_folders(folder_a, folder_b, direction, recursive, conflict, exclude_hidden)
+    pause_return()
+
+
+def sync_menu():
+    profile_note = (
+        "Sync Profiles (fmConfig.json)",
+        "Saved sync setups appear as options above Interactive Sync. Add them to "
+        "fmConfig.json as a syncProfiles list; each profile supports:\n"
+        "• name — the label shown in this menu\n"
+        "• folderA / folderB — the two folders (~ is expanded)\n"
+        "• direction — AtoB or BtoA (which side pushes its new/updated files)\n"
+        "• recursive — true/false (default true)\n"
+        "• conflict — newest or largest: when a file exists on both sides, copy "
+        "only when the source is newer / larger (default newest)\n"
+        "• excludeHidden — true/false (default true)\n"
+        "Profiles run exactly like Interactive Sync: a preview first, and "
+        "nothing is copied until you confirm.")
+    while True:
+        profiles, perr = _load_sync_profiles()
+        options = []
+        for pr in profiles:
+            name = pr.get("name") or "(unnamed profile)"
+            arrow = ("B → A"
+                     if str(pr.get("direction", "AtoB")).lower() in ("btoa", "b2a")
+                     else "A → B")
+            conflict = ("Largest"
+                        if str(pr.get("conflict", "newest")).lower() == "largest"
+                        else "Newest")
+            options.append((
+                f"Profile: {name}  ({arrow})",
+                f"Push new/updated files {arrow} using this saved profile:\n"
+                f"• Folder A — {pr.get('folderA', '?')}\n"
+                f"• Folder B — {pr.get('folderB', '?')}\n"
+                f"• Recursive: {'Yes' if pr.get('recursive', True) else 'No'}   "
+                f"Conflict: {conflict} wins   Hidden files: "
+                f"{'Excluded' if pr.get('excludeHidden', True) else 'Included'}\n"
+                "Previews first — nothing is copied until you confirm."))
+        options.append((
+            "Interactive Sync — enter folders, direction & options",
+            "Enter Folder A and Folder B, choose the push direction (A → B or "
+            "B → A), what wins when a file exists on both sides (newest or "
+            "largest), whether to include subfolders (default Yes), and whether "
+            "to exclude hidden files (default Yes). A preview lists every file "
+            "that would be copied — nothing is copied until you confirm."))
+        ch = render_menu("Sync", options,
+                         outro=(f"⚠ {perr}" if perr else None),
+                         help_note=profile_note)
+        if ch == "back":
+            return
+        if int(ch) <= len(profiles):
+            _run_sync_profile(profiles[int(ch) - 1])
+        else:
+            _sync_interactive()
+
+
 def zip_menu():
     options = [
         ("View Zip",
@@ -2188,6 +3691,41 @@ def zip_menu():
             zip_subfolders(target, dest, remove_after)
 
 
+def cleanup_menu():
+    options = [
+        ("Remove Junk Files (.DS_Store / desktop.ini)",
+         "Enter a root folder; every .DS_Store and desktop.ini beneath it "
+         "(hidden folders included) is found and listed. A DRY RUN preview "
+         "shows each file and its size — nothing is deleted until you "
+         "confirm."),
+        ("Purge Old Log Files",
+         "Trim old entries out of every .log file in ~/Documents/log (or a "
+         "folder you choose). You pick how many days to keep (default 90); "
+         "entries with a [YYYY-MM-DD HH:MM:SS] timestamp older than that are "
+         "removed — an entry's untimestamped body lines go with their header. "
+         "A DRY RUN table shows purge/keep line counts per file first, and a "
+         ".bak backup of each changed file is saved before it is rewritten."),
+    ]
+    while True:
+        ch = render_menu("Clean Up", options,
+                         intro="Junk-file cleanup · log purging — dry run first, always.")
+        if ch == "back":
+            return
+        if ch == "1":
+            root = ask_folder("Root folder to clean", default=os.path.expanduser("~"))
+            if not root:
+                pause_return(); continue
+            cleanup_junk_files(root)
+            pause_return()
+        elif ch == "2":
+            folder = ask_folder("Log folder", default=LOG_PURGE_DIR)
+            if not folder:
+                pause_return(); continue
+            days = ask("Days to keep", default=str(LOG_PURGE_DAYS))
+            cleanup_purge_logs(folder, days)
+            pause_return()
+
+
 def main_menu():
     options = [
         ("Compare  — compare 2 files, or folder contents",
@@ -2195,11 +3733,20 @@ def main_menu():
          "line-by-line diff. 'Compare Folder Contents' compares what's inside two "
          "folders by name and/or size, top-level or recursively — handy for "
          "checking a backup against the original."),
-        ("Display  — folder sizes",
-         "List every immediate subfolder of a chosen folder with its total size "
+        ("Display  — all drives, folder sizes",
+         "'All Drives' shows the size, used, and free space of every mounted "
+         "drive (free matches Finder's Available). The Subfolders options list "
+         "every immediate subfolder of a chosen folder with its total size "
          "(human-readable and exact bytes) and file count, sorted alphabetically "
          "or largest-first, ending with a grand total. Good for finding what's "
          "eating disk space."),
+        ("Eject    — eject all external drives",
+         "List the external drives currently mounted (name, size, mount point) "
+         "and eject them all — the same as clicking each drive's eject button. "
+         "Asks for confirmation first, shows a per-drive Success/Failed status, "
+         "and offers a force eject for drives that won't let go (e.g. Spotlight "
+         "or an app is still using them). macOS only (uses diskutil, with a "
+         "Finder fallback)."),
         ("Find     — files by combined criteria, folders by name, duplicates",
          "'Find Files' searches for files matching one or more criteria AND-ed "
          "together (filename pattern, extension, size over N MB, size under N MB) "
@@ -2209,19 +3756,51 @@ def main_menu():
          "'Find Missing by Filename' compares two folders and tables the files "
          "present in only one of them. Nothing is changed; results are just "
          "listed."),
+        ("Monitor  — file activity in a folder, real-time",
+         "Watch a folder (or a saved profile from fmConfig.json) and report "
+         "every created, modified, and deleted file as it happens — on screen "
+         "and to fm.log or a CSV. Options: recursive (default yes) and a file "
+         "extension filter. Runs until you press [Q/ESC]."),
         ("Remove   — duplicates, files/folders by name",
          "Delete duplicate files (by name or by exact content), files by name "
          "pattern, or folders by name pattern. Every removal shows a preview and "
          "is a DRY RUN until you confirm — nothing is deleted by accident."),
+        ("Sync     — push new/updated files between two folders",
+         "One-way sync between two folders: push new/updated files A → B or "
+         "B → A. Options: recursive (default yes), what wins when a file exists "
+         "on both sides (newest or largest), and excluding hidden files. Saved "
+         "profiles from fmConfig.json (syncProfiles) run the same way. Nothing "
+         "is deleted, and every run previews first — a DRY RUN until you "
+         "confirm."),
         ("Zip      — view zip, log zip file, zip subfolders",
          "'View Zip' lists a zip's contents (sizes, ratios, dates) without "
          "extracting it. 'Log Zip File' records a .zip/.tar (or a folder of "
          "them) to the CB9Inventory database. 'Zip SubFolders' compresses each "
          "subfolder of a target into its own .zip."),
+        ("Clean Up — junk files, purge old log entries",
+         "'Remove Junk Files' finds and deletes every .DS_Store / desktop.ini "
+         "under a root folder. 'Purge Old Log Files' trims entries older than "
+         "N days (default 90) out of the .log files in ~/Documents/log, saving "
+         "a .bak backup of each changed file. Both show a DRY RUN preview and "
+         "change nothing until you confirm."),
     ]
+    help_note = (
+        "Logging",
+        "Commands and their results screens are logged to the FM activity log:\n"
+        "• ~/Documents/log/fm.log\n"
+        "Each run is appended with a [YYYY-MM-DD HH:MM:SS] timestamp line, exactly "
+        "as shown on screen but with colors stripped — including the folders "
+        "entered and the full results table. Actions that log: Eject All External "
+        "Drives, Find Duplicates by Filename, Find Missing by Filename (reruns "
+        "via [R] Run Again are logged again), Monitor File Activity (each event "
+        "streams in real time — or to ~/Documents/log/fmMonitor.csv when CSV "
+        "output is chosen), and Sync (the preview and what was copied). "
+        "'Zip → Log Zip File' is different — it records archives to the "
+        "CB9Inventory database on a remote server, not to fm.log.")
     while True:
         ch = render_menu("Main Menu", options, is_main=True,
-                         intro="Compare · Display · Find · Remove · Zip")
+                         intro="Compare · Display · Eject · Find · Monitor · Remove · Sync · Zip · Clean Up",
+                         help_note=help_note)
         if ch == "quit":
             exit_screen(SCRIPT_NAME, VER)
             return
@@ -2230,11 +3809,20 @@ def main_menu():
         elif ch == "2":
             display_menu()
         elif ch == "3":
-            find_menu()
+            eject_external_drives()
+            pause_return()
         elif ch == "4":
-            remove_menu()
+            find_menu()
         elif ch == "5":
+            monitor_menu()
+        elif ch == "6":
+            remove_menu()
+        elif ch == "7":
+            sync_menu()
+        elif ch == "8":
             zip_menu()
+        elif ch == "9":
+            cleanup_menu()
 
 
 # =============================================================================
@@ -2243,7 +3831,7 @@ def main_menu():
 def build_parser():
     p = argparse.ArgumentParser(
         prog="fm.py", add_help=True,
-        description="File Management — compare, display, find, remove, zip. "
+        description="File Manager — compare, display, eject, find, monitor, remove, sync, zip, cleanup. "
                     "Run with no arguments for the interactive menu.")
     sub = p.add_subparsers(dest="cmd")
 
@@ -2258,6 +3846,8 @@ def build_parser():
     sz = sub.add_parser("sizes", help="Display subfolder sizes")
     sz.add_argument("folder", nargs="?", default=".")
     sz.add_argument("--sort", choices=["alpha", "size"], default="alpha")
+
+    sub.add_parser("drives", help="Display size and free space of all mounted drives")
 
     fd = sub.add_parser("find", help="Find folders/files (single criterion)")
     fd.add_argument("type", choices=["folder", "name", "ext", "over", "under"])
@@ -2281,11 +3871,43 @@ def build_parser():
     fmis.add_argument("--size", action="store_true",
                       help="match by filename AND size (same name with a different size = missing)")
 
+    frp = sub.add_parser("find-replace", help="Find text in files and replace it (dry-run unless --apply)")
+    frp.add_argument("root"); frp.add_argument("search"); frp.add_argument("replace")
+    frp.add_argument("--ext", help="only files with this extension, e.g. php")
+    frp.add_argument("--apply", action="store_true", help="Actually replace (default: dry run)")
+    frp.add_argument("--bak", action="store_true", help="save a .bak backup of each modified file")
+    frp.add_argument("--yes", action="store_true", help="Skip confirmation when replacing")
+
     rm = sub.add_parser("remove", help="Remove items (dry-run unless --delete)")
     rm.add_argument("type", choices=["folder", "name", "folder-name", "dup-name", "dup-hash"])
     rm.add_argument("args", nargs="+")
     rm.add_argument("--delete", action="store_true", help="Actually delete (default: dry run)")
     rm.add_argument("--yes", action="store_true", help="Skip confirmation when deleting")
+
+    mo = sub.add_parser("monitor", help="Watch a folder for file activity in real time (Ctrl-C to stop)")
+    mo.add_argument("folder", nargs="?", help="Folder to monitor")
+    mo.add_argument("--profile", help="run a named monitorProfiles entry from fmConfig.json instead of giving a folder")
+    mo.add_argument("--no-recursive", action="store_true", help="top-level files only (default: recursive)")
+    mo.add_argument("--ext", help="comma-separated extensions to watch, e.g. jpg,png (default: all files)")
+    mo.add_argument("--csv", action="store_true", help="log events to fmMonitor.csv instead of fm.log")
+
+    ej = sub.add_parser("eject", help="Eject all external drives (macOS)")
+    ej.add_argument("--list", action="store_true", help="list external drives and exit (no eject)")
+    ej.add_argument("--force", action="store_true", help="force-unmount before ejecting (bypasses Spotlight etc.)")
+    ej.add_argument("--yes", action="store_true", help="Skip confirmation and eject immediately")
+
+    sy = sub.add_parser("sync", help="One-way sync: push new/updated files between two folders (dry-run unless --copy)")
+    sy.add_argument("a", nargs="?", help="Folder A")
+    sy.add_argument("b", nargs="?", help="Folder B")
+    sy.add_argument("--to", choices=["b", "a"], default="b",
+                    help="push direction: 'b' = A→B (default), 'a' = B→A")
+    sy.add_argument("--profile", help="run a named syncProfiles entry from fmConfig.json instead of giving folders")
+    sy.add_argument("--conflict", choices=["newest", "largest"], default="newest",
+                    help="when a file exists on both sides, copy only if the source is newer (default) / larger")
+    sy.add_argument("--no-recursive", action="store_true", help="top-level files only (default: recursive)")
+    sy.add_argument("--include-hidden", action="store_true", help="include hidden files (default: excluded)")
+    sy.add_argument("--copy", action="store_true", help="Actually copy (default: dry run)")
+    sy.add_argument("--yes", action="store_true", help="Skip confirmation when copying")
 
     zs = sub.add_parser("zip-subfolders", help="Zip each subfolder")
     zs.add_argument("target"); zs.add_argument("dest", nargs="?", default=None)
@@ -2296,6 +3918,13 @@ def build_parser():
 
     zl = sub.add_parser("zip-log", help="Log a .zip/.tar (or a folder of them) to CB9Inventory")
     zl.add_argument("target")
+
+    cu = sub.add_parser("cleanup", help="Remove junk files or purge old log entries (dry-run unless --delete)")
+    cu.add_argument("what", choices=["junk", "logs"])
+    cu.add_argument("path", nargs="?", help="junk: root folder (required); logs: log folder (default ~/Documents/log)")
+    cu.add_argument("--days", type=int, default=LOG_PURGE_DAYS, help="logs: days of entries to keep (default 90)")
+    cu.add_argument("--delete", action="store_true", help="Actually delete/purge (default: dry run)")
+    cu.add_argument("--yes", action="store_true", help="Skip confirmation when deleting/purging")
 
     return p
 
@@ -2309,6 +3938,8 @@ def run_cli(ns):
                                 ns.recursive, ns.by)
     elif cmd == "sizes":
         display_folder_sizes(clean_path(ns.folder), ns.sort)
+    elif cmd == "drives":
+        display_all_drives()
     elif cmd == "find":
         root = clean_path(ns.root)
         if ns.type == "folder":
@@ -2325,6 +3956,10 @@ def run_cli(ns):
         find_duplicates_by_filename(ns.folders)
     elif cmd == "find-missing":
         find_missing_by_filename(ns.a, ns.b, ns.mode, ns.size)
+    elif cmd == "find-replace":
+        find_and_replace(clean_path(ns.root), ns.search, ns.replace, ns.ext,
+                         live_requested=ns.apply, assume_yes=ns.yes,
+                         backup=ns.bak)
     elif cmd == "remove":
         live = True if ns.delete else False
         if ns.type == "folder":
@@ -2337,12 +3972,78 @@ def run_cli(ns):
             _cli_dupname(ns.args, live, ns.yes)
         elif ns.type == "dup-hash":
             _cli_duphash(ns.args, live, ns.yes)
+    elif cmd == "monitor":
+        if ns.profile:
+            profiles, perr = _load_monitor_profiles()
+            pr = next((p for p in profiles
+                       if str(p.get("name", "")).lower() == ns.profile.lower()), None)
+            if perr:
+                print(color_text(f"  {perr}", fg=RED))
+            elif pr is None:
+                names = ", ".join(str(p.get("name", "?")) for p in profiles) or "(none defined)"
+                print(color_text(f"  No monitor profile named '{ns.profile}'. Profiles: {names}", fg=RED))
+            else:
+                monitor_activity(clean_path(str(pr.get("folder", ""))),
+                                 recursive=bool(pr.get("recursive", True)),
+                                 exts=pr.get("extensions", ""),
+                                 output="csv" if (ns.csv or str(pr.get("output", "log")).lower() == "csv") else "log",
+                                 profile_name=pr.get("name") or "(unnamed profile)")
+        elif not ns.folder:
+            print(color_text("  usage: monitor FOLDER  (or: monitor --profile NAME)", fg=RED))
+        else:
+            monitor_activity(clean_path(ns.folder),
+                             recursive=not ns.no_recursive,
+                             exts=ns.ext or "",
+                             output="csv" if ns.csv else "log")
+    elif cmd == "eject":
+        if ns.list:
+            drives = _external_drives()
+            if drives:
+                print()
+                _print_drive_list(drives)
+            else:
+                print(color_text("  No external drives found.", fg=YELLOW))
+        else:
+            eject_external_drives(live_requested=True, assume_yes=ns.yes,
+                                  force=ns.force)
+    elif cmd == "sync":
+        live = True if ns.copy else False
+        if ns.profile:
+            profiles, perr = _load_sync_profiles()
+            pr = next((p for p in profiles
+                       if str(p.get("name", "")).lower() == ns.profile.lower()), None)
+            if perr:
+                print(color_text(f"  {perr}", fg=RED))
+            elif pr is None:
+                names = ", ".join(str(p.get("name", "?")) for p in profiles) or "(none defined)"
+                print(color_text(f"  No sync profile named '{ns.profile}'. Profiles: {names}", fg=RED))
+            else:
+                _run_sync_profile(pr, live_requested=live, assume_yes=ns.yes)
+        elif not ns.a or not ns.b:
+            print(color_text("  usage: sync FOLDER_A FOLDER_B  (or: sync --profile NAME)", fg=RED))
+        else:
+            sync_folders(clean_path(ns.a), clean_path(ns.b),
+                         "a2b" if ns.to == "b" else "b2a",
+                         recursive=not ns.no_recursive,
+                         conflict=ns.conflict,
+                         exclude_hidden=not ns.include_hidden,
+                         live_requested=live, assume_yes=ns.yes)
     elif cmd == "zip-subfolders":
         zip_subfolders(ns.target, ns.dest, ns.remove)
     elif cmd == "zip-view":
         zip_view(ns.path)
     elif cmd == "zip-log":
         log_zip_files(ns.target)
+    elif cmd == "cleanup":
+        live = True if ns.delete else False
+        if ns.what == "junk":
+            if not ns.path:
+                print(color_text("  usage: cleanup junk ROOT [--delete] [--yes]", fg=RED))
+            else:
+                cleanup_junk_files(ns.path, live_requested=live, assume_yes=ns.yes)
+        else:
+            cleanup_purge_logs(ns.path or LOG_PURGE_DIR, ns.days,
+                               live_requested=live, assume_yes=ns.yes)
 
 
 # CLI remove wrappers reuse the screen functions but pass live_requested and

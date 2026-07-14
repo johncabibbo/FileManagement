@@ -1,7 +1,7 @@
-# File Management (`fm.py`)
+# File Manager (`fm.py`)
 
 A single, unified command‑line tool for the everyday file‑management chores that
-used to live in nine separate scripts. **File Management** gives you an interactive
+used to live in nine separate scripts. **File Manager** gives you an interactive
 menu **and** scriptable CLI subcommands for comparing, measuring, finding,
 removing, and zipping files and folders.
 
@@ -23,10 +23,11 @@ removing, and zipping files and folders.
 8. [Usage — Interactive Mode](#usage--interactive-mode)
 9. [Usage — CLI Mode](#usage--cli-mode)
 10. [The Dry‑Run Safety Model](#the-dry-run-safety-model)
-11. [Full Option Reference](#full-option-reference)
-12. [Worked Examples](#worked-examples)
-13. [Troubleshooting](#troubleshooting)
-14. [License / Copyright](#license--copyright)
+11. [Logging — The Activity Log](#logging--the-activity-log)
+12. [Full Option Reference](#full-option-reference)
+13. [Worked Examples](#worked-examples)
+14. [Troubleshooting](#troubleshooting)
+15. [License / Copyright](#license--copyright)
 
 ---
 
@@ -38,12 +39,17 @@ a full‑screen interactive menu:
 ```
 Compare  →  Compare 2 Files (side by side), Compare Folder Contents
                 (Recursive Y/N · By Name / Size / Both)
-Display  →  Folder Sizes
+Display  →  All Drives (size & free space) · Subfolder Sizes (alpha / largest first)
+Eject    →  Eject All External Drives (macOS)
 Find     →  Find Files (name · ext · size over/under, combined) · Find Folders
                 · Find Duplicates by Filename · Find Missing by Filename
                 · Find Missing by Filename & Size (all show a size table per folder)
+                · Find & Replace (text in files — dry run, then confirm)
+Monitor  →  watch a folder for created/modified/deleted files in real time
 Remove   →  duplicates (by name / by hash) · by file name · by folder name
-Zip      →  View Zip · Zip SubFolders
+Sync     →  push new/updated files A → B or B → A (profiles or interactive)
+Zip      →  View Zip · Log Zip File · Zip SubFolders
+Clean Up →  Remove Junk Files (.DS_Store / desktop.ini) · Purge Old Log Files
 ```
 
 Run it **with a subcommand** to do the same work non‑interactively (ideal for
@@ -90,6 +96,24 @@ Two capabilities were **added** beyond a literal merge:
 - **CLI subcommands** for every action — same engine, no prompts.
 - **Dry‑run‑by‑default** removals — preview first, delete only on explicit
   opt‑in.
+- **One‑way folder sync** — push new/updated files A → B or B → A, with
+  newest/largest conflict rules, saved profiles in `fmConfig.json`, and the
+  same preview‑first safety model (nothing is ever deleted).
+- **Eject all external drives** (macOS) — lists the mounted external drives,
+  confirms, ejects each with per‑drive status, and offers a force eject for
+  drives that won't let go.
+- **Real‑time file activity monitor** — watch a folder (recursive optional,
+  extension filter) and see every created / modified / deleted file as it
+  happens, on screen and in fm.log or a CSV. No third‑party packages —
+  1‑second snapshot polling.
+- **Find & Replace across a folder tree** — literal, case‑insensitive text
+  replacement with an optional extension filter. Always a dry run first (every
+  match shown with file, line number, and highlighted text), then an explicit
+  confirm, with optional `.bak` backups of each modified file.
+- **Clean Up** — find and delete every `.DS_Store` / `desktop.ini` under a
+  root folder, and purge log entries older than N days from every `.log` file
+  in a folder (block‑aware, `.bak` backup before each rewrite). Both dry‑run
+  first.
 - **Recursive**, hidden‑file‑aware scanning (files/folders beginning with `.`
   are ignored in compares and zip listings).
 - **Human‑readable + exact byte** sizes everywhere.
@@ -107,6 +131,7 @@ Two capabilities were **added** beyond a literal merge:
 | **Python ≥ 3.10** | The script shebang targets `/opt/homebrew/opt/python@3.12/libexec/bin/python3`. |
 | **CB9Lib** | Expected at `~/Documents/script/CB9Lib` (added to `sys.path` automatically). |
 | **`zip` command** | Used by **Zip SubFolders** (pre‑installed on macOS; `apt install zip` on Linux). |
+| **`diskutil`** (macOS) | Used by **Eject All External Drives** — this feature is macOS‑only. |
 | **macOS / Linux terminal** | ANSI colors and terminal‑width detection. Sounds use `afplay` (macOS). |
 
 No third‑party Python packages are required — only the standard library and
@@ -200,8 +225,9 @@ python "%USERPROFILE%\Documents\script\FM\fm.py" %*
 
 ## Configuration
 
-`fm.py` needs **no config file** — folders and options are supplied
-interactively or as CLI arguments. There are two configurable behaviors:
+`fm.py` needs **no config file** for everyday use — folders and options are
+supplied interactively or as CLI arguments. There are four configurable
+behaviors:
 
 ### 1. CB9Lib location
 
@@ -218,13 +244,13 @@ If your CB9Lib lives elsewhere, edit that one line near the top of `fm.py`.
 
 Completion sounds default to `audio/success.mp3` and `audio/failure.wav` beside
 `fm.py`. You can override them per project in `~/userProfile.json` using the
-project name **`File Management`**:
+project name **`File Manager`**:
 
 ```json
 {
   "projectPreferences": [
     {
-      "projectName": "File Management",
+      "projectName": "File Manager",
       "successAudio": "~/Documents/sounds/done.mp3",
       "failureAudio": "~/Documents/sounds/error.wav"
     }
@@ -235,6 +261,71 @@ project name **`File Management`**:
 Lookup is safe: if the profile is missing, the project has no entry, or the file
 does not exist, `fm.py` silently falls back to the bundled defaults (and if those
 are missing too, it simply plays nothing).
+
+### 3. Sync profiles (`fmConfig.json`)
+
+Saved sync setups live in `fmConfig.json` (beside `fm.py`) as a `syncProfiles`
+list. Each profile appears as its own option at the top of the **Sync** menu
+and can also be run from the CLI with `fm.py sync --profile NAME`:
+
+```json
+{
+  "syncProfiles": [
+    {
+      "name": "Media to Backup",
+      "folderA": "~/Media",
+      "folderB": "/Volumes/CB9-2t/MediaBackup",
+      "direction": "AtoB",
+      "recursive": true,
+      "conflict": "newest",
+      "excludeHidden": true
+    }
+  ]
+}
+```
+
+| Key | Values | Default | Meaning |
+|-----|--------|---------|---------|
+| `name` | string | *(unnamed profile)* | Label shown in the Sync menu / matched by `--profile` |
+| `folderA` / `folderB` | paths (`~` ok) | — | The two folders |
+| `direction` | `AtoB` / `BtoA` | `AtoB` | Which side pushes its new/updated files |
+| `recursive` | `true` / `false` | `true` | Include subfolders |
+| `conflict` | `newest` / `largest` | `newest` | When a file exists on both sides, copy only if the source is newer / larger |
+| `excludeHidden` | `true` / `false` | `true` | Skip hidden files/folders (names starting with `.`) |
+
+Profiles run exactly like an interactive sync: a **preview first**, and nothing
+is copied until you confirm. The same reference is available in the app — press
+**`H`** on the Sync menu.
+
+### 4. Monitor profiles (`fmConfig.json`)
+
+Saved monitor setups live in the same file as a `monitorProfiles` list. Each
+profile appears at the top of the **Monitor** menu and can be run from the CLI
+with `fm.py monitor --profile NAME`:
+
+```json
+{
+  "monitorProfiles": [
+    {
+      "name": "Watch Downloads",
+      "folder": "~/Downloads",
+      "recursive": true,
+      "extensions": "zip,dmg,pdf",
+      "output": "log"
+    }
+  ]
+}
+```
+
+| Key | Values | Default | Meaning |
+|-----|--------|---------|---------|
+| `name` | string | *(unnamed profile)* | Label shown in the Monitor menu / matched by `--profile` |
+| `folder` | path (`~` ok) | — | The folder to watch |
+| `recursive` | `true` / `false` | `true` | Include subfolders |
+| `extensions` | `"jpg,png"` or a list | *(all files)* | Only report files with these extensions |
+| `output` | `log` / `csv` | `log` | Log events to `fm.log` or to `~/Documents/log/fmMonitor.csv` |
+
+The same reference is available in the app — press **`H`** on the Monitor menu.
 
 ---
 
@@ -279,11 +370,19 @@ Key points:
 | # | Option | What it does |
 |---|--------|--------------|
 | 1 | **Compare** | Compare two files side by side, or compare folder contents |
-| 2 | **Display** | List subfolder sizes |
-| 3 | **Find** | Locate folders/files by name, extension, or size; find duplicate or missing filenames |
-| 4 | **Remove** | Delete folders, files, or duplicates (dry‑run first) |
-| 5 | **Zip** | Zip each subfolder, or view a zip’s contents |
+| 2 | **Display** | All drives (size & free space), or subfolder sizes |
+| 3 | **Eject** | Eject all external drives (macOS, confirms first) |
+| 4 | **Find** | Locate folders/files by name, extension, or size; find duplicate or missing filenames |
+| 5 | **Monitor** | Watch a folder for file activity in real time (profiles or interactive) |
+| 6 | **Remove** | Delete folders, files, or duplicates (dry‑run first) |
+| 7 | **Sync** | Push new/updated files between two folders (profiles or interactive, dry‑run first) |
+| 8 | **Zip** | View a zip’s contents, log a zip to CB9Inventory, or zip each subfolder |
+| 9 | **Clean Up** | Remove junk files, or purge old entries from log files (dry‑run first) |
 | Q | **Quit** | Exit with the standard CB9 exit screen |
+
+Press **`H`** on any menu for on‑screen descriptions of its options. The Main
+Menu Help ends with a **Logging** section showing where commands and results
+are logged (see [Logging — The Activity Log](#logging--the-activity-log)).
 
 ### 1 · Compare
 
@@ -318,17 +417,44 @@ descriptions on screen):
 
 Hidden files/folders (names starting with `.`) are ignored throughout.
 
-### 2 · Display (Folder Sizes)
+### 2 · Display
 
-1. Enter the folder to measure (defaults to the current directory).
-2. Choose **Alphabetical** or **By Size (largest first)**.
+The Display menu has three options:
 
-Output columns (in order): **Folder** (always first), **Size (human‑readable)**,
-**Bytes (comma‑formatted)**, **File Count** — with a **TOTAL** row.
+**1. All Drives** — size and free space of every mounted drive: the boot
+volume plus each drive under `/Volumes` (each physical drive listed once).
+Columns: **Drive**, **Size**, **Used**, **Free**, **Use%**, **Mount Point**.
+Free is the space actually available to you, matching Finder's **Available**
+figure, and Use% turns yellow at 75% and red at 90%.
 
-### 3 · Find
+**2. Subfolders Alphabetically / 3. Subfolders by Size (largest first)** —
+enter the folder to measure (defaults to the current directory); its immediate
+subfolders are listed A→Z or biggest‑first. Output columns (in order):
+**Folder** (always first), **Size (human‑readable)**, **Bytes
+(comma‑formatted)**, **File Count** — with a **TOTAL** row.
 
-The Find submenu has five options. All Find searches (and folder Compares)
+### 3 · Eject  *(macOS)*
+
+**Eject All External Drives** — the equivalent of clicking every external
+drive's eject button at once:
+
+1. The mounted external drives are listed (name, size, mount point). External
+   = `diskutil info` reports `Internal: No`, a USB / Thunderbolt / SATA /
+   FireWire protocol, or removable media.
+2. Confirm **Eject all N drive(s)?** — the default is **No**.
+3. Each drive is ejected with a per‑drive **Success / Failed** status
+   (`diskutil eject`, falling back to Finder's eject via AppleScript).
+4. If any drive won't let go (Spotlight indexing, an app holding files open),
+   you're offered a **force eject** (`diskutil unmountDisk force`) for just
+   the failed drives.
+
+The drive list and results are appended to the
+[activity log](#logging--the-activity-log). Internal disks and the boot
+volume are never touched.
+
+### 4 · Find
+
+The Find submenu has six options. All Find searches (and folder Compares)
 skip the Windows Recycle Bin folder (`$RECYCLE.BIN`) found on external drives,
 plus `.DS_Store` and `desktop.ini` junk files. (**Remove → By File Name** can
 still target `.DS_Store` / `desktop.ini` intentionally for cleanup.)
@@ -361,8 +487,8 @@ single folder, every size is listed in that column. Matching is by filename
 only — contents are not compared. Read‑only: nothing is changed.
 
 ```
-  1 - /Volumes/DriveA/lostMedia
-  2 - /Volumes/DriveA/UncategorizedImages
+  1 - /Volumes/CB9-2t/lostMedia
+  2 - /Volumes/CB9-2t/UncategorizedImages
 
   Filename            1         2
   ---------  ----------  --------
@@ -408,7 +534,55 @@ Patterns use shell‑style wildcards: `*` (any run of chars), `?` (one char),
 `[abc]` (character set). When a size criterion is active, results are sorted
 largest‑first; otherwise alphabetically.
 
-### 4 · Remove  *(dry‑run by default)*
+**6. Find & Replace** — enter a **folder**, the **text to find**, the
+**replacement text** (blank = remove the text), and an optional **file
+extension**. The folder is scanned recursively; hidden files/folders, binary
+files, and `.bak` files are skipped, and matching is **literal and
+case‑insensitive**. It is **always a dry run first**: every match is listed
+with its file, line number, and the line with the matched text highlighted —
+nothing is touched. A `[y/N]` confirm then replaces every occurrence (a
+follow‑up prompt offers a **`.bak` backup** of each modified file first);
+answering No exits with nothing changed. File bytes and line endings
+round‑trip unchanged apart from the replacement, and the results screen is
+appended to the activity log.
+
+### 5 · Monitor  *(real‑time)*
+
+**Monitor File Activity** — watch a folder and see every file event as it
+happens. The Monitor menu lists your saved **profiles** (see
+[Configuration → Monitor profiles](#4-monitor-profiles-fmconfigjson)) followed
+by **Interactive Monitor**, which asks for:
+
+1. **Folder to monitor**.
+2. **Include subfolders (recursive)?** — default **Yes**.
+3. **File extensions to watch** — comma‑separated (e.g. `jpg, png`); leave
+   blank to watch every file.
+4. **Log destination** — the FM activity log (`~/Documents/log/fm.log`) or a
+   CSV (`~/Documents/log/fmMonitor.csv`, rows of
+   `Timestamp,Filename,Folder,Event`).
+
+Every **created**, **modified**, and **deleted** file then appears on screen
+*and* in the chosen log in real time (events are flushed immediately, so
+`tail -f` works):
+
+```
+  Monitoring... [Q/ESC] Stop. Events appear below as they happen.
+
+  7/14/26 10:26:27 am  CREATED   newfile.txt  (7 B)
+  7/14/26 10:26:27 am  CREATED   sub/deep.log  (6 B)
+  7/14/26 10:26:30 am  MODIFIED  existing.txt  (11 B)
+  7/14/26 10:26:30 am  DELETED   newfile.txt
+
+  Stopped — 4 event(s): 2 created, 1 modified, 1 deleted.
+```
+
+Press **`[Q/ESC]`** to stop and return to the menu (a summary line is written
+to the log). Detection polls once a second with snapshot diffs — no
+third‑party packages. Hidden files are included; `.DS_Store` / `desktop.ini`
+junk and `$RECYCLE.BIN` are ignored. Read‑only: monitoring never changes the
+watched folder.
+
+### 6 · Remove  *(dry‑run by default)*
 
 Pick what to remove, supply the target(s), and **review the preview**. Nothing is
 deleted until you answer **Yes** to the confirmation.
@@ -429,15 +603,101 @@ After the preview you’ll see:
 
 Answer **`n`** (the default) to cancel; **`y`** to delete.
 
-### 5 · Zip
+### 7 · Sync  *(dry‑run by default)*
+
+One‑way sync: **push new/updated files** from one folder into the other.
+Nothing is ever deleted, and nothing is copied until you confirm the preview.
+
+The Sync menu lists your saved **profiles** (see
+[Configuration → Sync profiles](#3-sync-profiles-fmconfigjson)) followed by
+**Interactive Sync**, which asks for:
+
+1. **Folder A** and **Folder B**.
+2. **Direction** — push new/updated files **A → B**, or **B → A**.
+3. **If a file exists on both sides** — choose the **newest** (copy only when
+   the source is newer — the default) or the **largest** (copy only when the
+   source is larger).
+4. **Include subfolders (recursive)?** — default **Yes**.
+5. **Exclude hidden files?** — default **Yes**.
+
+The preview then lists every file that would be copied — `NEW` (missing from
+the destination) or `UPDATE` (exists on both sides and the source wins the
+conflict rule), with size and modified date, and for updates what would be
+replaced:
+
+```
+  2 new, 1 updated — 57 B to copy from A to B:
+
+  Action        Size  Modified          File
+  ------- ----------  ----------------- ------------------------------
+  UPDATE        25 B  7/14/26 10:00 am  changed.txt  (replaces 10 B, 1/1/26 1:01 am)
+  NEW           19 B  7/14/26 10:00 am  onlyA.txt
+  NEW           13 B  7/14/26 10:00 am  sub/deep.txt
+
+  This was a DRY RUN — nothing has been copied yet.
+  Actually copy these 3 file(s) from A to B? [y/N]
+```
+
+Copies preserve the file's modified time (`shutil.copy2`), so future
+**newest** runs keep working correctly. Destination subfolders are created as
+needed. Junk files (`.DS_Store`, `desktop.ini`) and `$RECYCLE.BIN` are always
+skipped. The preview and copy results are appended to the
+[activity log](#logging--the-activity-log).
+
+### 8 · Zip
 
 - **View Zip** — enter a **zip file** to list its contents, or a **folder** to
   pick from the zips inside it. Shows uncompressed/compressed sizes, per‑file
   compression ratio, modified date, and totals — without extracting.
+- **Log Zip File** — log a `.zip` / `.tar` archive (or every archive in a
+  folder, top level only) to the **CB9Inventory database** on a remote server via the
+  DocInfo Manager API. Archives are matched by name + size (insert or update)
+  and their file lists are synced. Requires the `logZip` section of
+  `fmConfig.json` (`apiUrl`, `serverSecretKey`). `.gz` files are ignored.
 - **Zip SubFolders** — enter a **target** folder (whose subfolders get zipped)
   and a **zip destination** (defaults to the current directory). You’ll be asked
   whether to **remove source folders after a successful zip**. `.DS_Store` and
   `desktop.ini` are cleaned first; name collisions become `name-2.zip`, etc.
+
+### 9 · Clean Up  *(dry‑run by default)*
+
+Two housekeeping tools. Like Remove, both **always preview first** — nothing
+is deleted or rewritten until you confirm.
+
+**1. Remove Junk Files** — enter a **root folder** (defaults to your home
+folder). Every `.DS_Store` and `desktop.ini` beneath it is found —
+**recursively, hidden folders included** — and listed with its size, using the
+same preview/confirm flow as the Remove menu:
+
+> *This was a DRY RUN — nothing has been deleted yet.*
+> *Actually delete these N item(s)? [y/N]*
+
+**2. Purge Old Log Files** — trim old entries out of **every `.log` file** in
+a folder:
+
+1. **Log folder** — defaults to `~/Documents/log`.
+2. **Days to keep** — defaults to **90**. Entries with a
+   `[YYYY-MM-DD HH:MM:SS]` timestamp older than that are purged.
+3. A per‑file **preview table** shows the purge/keep line counts and the file
+   size before anything is touched:
+
+   ```
+     Log File               Purge      Keep        Size
+     -------------------  --------  --------  ----------
+     claudeCommands.log      1,204     3,310      612.4K
+     fm.log                      0       188       22.1K
+
+     This was a DRY RUN — nothing has been purged yet.
+     Actually purge 1,204 old line(s) from 2 file(s)? [y/N]
+   ```
+
+4. On confirm, a **`.bak` backup** of each changed file is saved before the
+   file is rewritten. Files with nothing to purge are left untouched.
+
+The purge is **block‑aware**: untimestamped lines follow their
+`[YYYY-MM-DD HH:MM:SS]` header's keep/purge decision, so a multi‑line log
+entry (header + body + blank line) is always kept or purged **as a whole** —
+ported from `purgeLog.sh`, with this improvement.
 
 ---
 
@@ -450,6 +710,7 @@ Any subcommand runs non‑interactively and prints results without pausing. See
 fm.py compare-2files   FILE_A FILE_B
 fm.py compare-contents A B [--recursive] [--by name|size|both]
 fm.py sizes [FOLDER] [--sort alpha|size]
+fm.py drives                          # size and free space of all mounted drives
 fm.py find folder PATTERN [ROOT]
 fm.py find name   PATTERN [ROOT]
 fm.py find ext    EXT     [ROOT]
@@ -459,13 +720,24 @@ fm.py find-files [ROOT] [--name PAT] [--ext E] [--over N] [--under N]   # combin
 fm.py find-dups  FOLDER...            # duplicate filenames, size table per folder
 fm.py find-missing A B [--in first|second|either] [--size]   # filenames in only one folder
                                                               # --size: match name AND size
+fm.py find-replace ROOT SEARCH REPLACE [--ext E] [--apply] [--bak] [--yes]
+                                      # find & replace text in files (dry run unless --apply)
 fm.py remove folder      PATH        [--delete] [--yes]
 fm.py remove name        PATTERN ROOT [--delete] [--yes]   # files by name
 fm.py remove folder-name PATTERN ROOT [--delete] [--yes]   # folders by name
 fm.py remove dup-name    FOLDER...    [--delete] [--yes]
 fm.py remove dup-hash    FOLDER...    [--delete] [--yes]
+fm.py eject [--list] [--force] [--yes]   # eject all external drives (macOS)
+fm.py monitor FOLDER [--no-recursive] [--ext jpg,png] [--csv]   # Ctrl-C stops
+fm.py monitor --profile NAME             # run a monitorProfiles entry from fmConfig.json
+fm.py sync FOLDER_A FOLDER_B [--to b|a] [--conflict newest|largest]
+           [--no-recursive] [--include-hidden] [--copy] [--yes]
+fm.py sync --profile NAME             # run a syncProfiles entry from fmConfig.json
 fm.py zip-subfolders  TARGET [DEST] [-r|--remove]
 fm.py zip-view [ZIP|FOLDER]
+fm.py zip-log  TARGET                 # log .zip/.tar archives to CB9Inventory
+fm.py cleanup junk ROOT [--delete] [--yes]                  # .DS_Store / desktop.ini
+fm.py cleanup logs [FOLDER] [--days N] [--delete] [--yes]   # purge old log entries
 ```
 
 Default argument values:
@@ -475,7 +747,9 @@ Default argument values:
 | `compare-contents` | `--recursive` / `--by` | off (top level) / `both` |
 | `sizes` | `FOLDER` / `--sort` | `.` (current dir) / `alpha` |
 | `find *` | `ROOT` | `.` (current dir) |
+| `sync` | `--to` / `--conflict` | `b` (A→B) / `newest` |
 | `zip-subfolders` | `DEST` | current directory |
+| `cleanup logs` | `FOLDER` / `--days` | `~/Documents/log` / `90` |
 
 ---
 
@@ -497,8 +771,61 @@ propose the remaining copies for deletion. As an extra safeguard, the two
 `YES`** to confirm deletion — any other input cancels (the other removals use a
 simple `y/n`).
 
+**Sync follows the same model for copying:** the preview is a dry run, and
+files are only copied after the interactive confirm — or, on the CLI, with
+`--copy` (plus `--yes` to skip the confirmation). Sync never deletes anything.
+
+**Clean Up follows the same model too:** Remove Junk Files uses the exact
+Remove preview/confirm flow above, and Purge Old Log Files shows its per‑file
+purge/keep table first, purges only after the confirm (CLI: `--delete`, plus
+`--yes` to skip the prompt), and saves a `.bak` backup of every file it
+rewrites.
+
+**Find & Replace follows it for writing:** the match list is always shown
+first, and files are only modified after the confirm — or, on the CLI, with
+`--apply` (plus `--yes` to skip the confirmation, and `--bak` for backups).
+
 > 💡 **Tip:** Run any removal once with no flags (or in the menu) to inspect the
-> preview, then re‑run with `--delete` once you’re satisfied.
+> preview, then re‑run with `--delete` once you’re satisfied. The same applies
+> to `sync` — inspect the preview, then re‑run with `--copy`.
+
+---
+
+## Logging — The Activity Log
+
+Commands and their results screens are logged to the FM **activity log**:
+
+```
+~/Documents/log/fm.log
+```
+
+Each run is **appended** with a `[YYYY-MM-DD HH:MM:SS]` timestamp line,
+followed by the screen output exactly as it appeared — colors stripped —
+including the folders entered and the full results table. The file grows
+indefinitely; it is plain text, so it can be viewed with `less`, `tail`, or
+any editor.
+
+**Actions that write to the activity log:**
+
+| Action | What is logged |
+|--------|----------------|
+| **Eject All External Drives** | The drive list + per‑drive eject results |
+| **Find → Find Duplicates by Filename** | Folder list + the duplicate‑filename size table |
+| **Find → Find Missing by Filename** (and **& Size**) | Folder 1/2 list + the missing‑filename table |
+| **Find → Find & Replace** | The settings header, the dry‑run match list (file · line number · line), and what was actually replaced |
+| **Monitor File Activity** | The session header, then each created/modified/deleted event **in real time**, and a closing summary. (With CSV output the events go to `~/Documents/log/fmMonitor.csv` instead.) |
+| **Sync** (profiles, interactive, and CLI) | The settings header, the NEW/UPDATE preview table, and what was actually copied |
+| Reruns via **`[R]` Run Again** | Each rerun is logged as a fresh timestamped entry |
+
+Notes:
+
+- The log directory (`~/Documents/log/`) is created automatically if missing;
+  a logging failure never interrupts the on‑screen output.
+- **Zip → Log Zip File** is different — it records archives to the
+  **CB9Inventory database** on a remote server (via the DocInfo Manager API), not to
+  `fm.log`.
+- This information is also shown in the app itself: press **`H`** on the Main
+  Menu — the Help screen ends with a **Logging** section.
 
 ---
 
@@ -531,12 +858,17 @@ side. Each row is marked:
 | `size` | For entries present in **both**, report those whose size differs |
 | `both` *(default)* | Run both reports |
 
-### Display — `--sort`
+### Display — `--sort` and `drives`
+
+`fm.py sizes [FOLDER] --sort …`:
 
 | Value | Meaning |
 |-------|---------|
 | `alpha` *(default)* | Alphabetical by folder name |
 | `size` | Largest total size first |
+
+`fm.py drives` takes no options — it prints every mounted drive with Size,
+Used, Free (matches Finder's Available), Use%, and mount point.
 
 ### Find — `type` (single criterion)
 
@@ -572,7 +904,7 @@ across folders) are shown in a table with a numbered folder header and one
 size column per folder. Read‑only — nothing is changed.
 
 ```bash
-fm.py find-dups /Volumes/DriveA/lostMedia /Volumes/DriveA/UncategorizedImages
+fm.py find-dups /Volumes/CB9-2t/lostMedia /Volumes/CB9-2t/UncategorizedImages
 ```
 
 ### `find-missing` — filenames in only one of two folders
@@ -592,7 +924,29 @@ Read‑only — nothing is changed.
 | `--size` | match by filename **and** size — a same‑named file with a different size is also reported |
 
 ```bash
-fm.py find-missing /Volumes/DriveA/lostMedia /Volumes/DriveA/UncategorizedImages --in first
+fm.py find-missing /Volumes/CB9-2t/lostMedia /Volumes/CB9-2t/UncategorizedImages --in first
+```
+
+### `find-replace` — find & replace text in files
+
+`fm.py find-replace ROOT SEARCH REPLACE` scans ROOT recursively (hidden
+files/folders, binary files, junk names, and `.bak` files are skipped) for
+**literal, case‑insensitive** occurrences of SEARCH. Without `--apply` it is a
+**dry run**: every match is listed as file · line number · line with the
+matched text highlighted, and nothing is touched. Use `""` as REPLACE to
+delete the text. File bytes and line endings round‑trip unchanged apart from
+the replacement.
+
+| Flag | Effect |
+|------|--------|
+| `--ext E` | Only scan files with extension `E` (e.g. `php`) |
+| `--apply` | Actually replace (otherwise dry run) |
+| `--bak` | Save a `.bak` backup of each modified file before writing |
+| `--yes` | Skip the confirmation prompt (only meaningful with `--apply`) |
+
+```bash
+fm.py find-replace ~/Documents/sites/mysite "old-domain.com" "new-domain.com" --ext php           # dry run
+fm.py find-replace ~/Documents/sites/mysite "old-domain.com" "new-domain.com" --ext php --apply --bak
 ```
 
 ### Remove — `type` and flags
@@ -610,6 +964,60 @@ fm.py find-missing /Volumes/DriveA/lostMedia /Volumes/DriveA/UncategorizedImages
 | `--delete` | Perform the deletion (otherwise dry run) |
 | `--yes` | Skip the confirmation prompt (only meaningful with `--delete`) |
 
+### Eject — options *(macOS)*
+
+| Option | Effect |
+|--------|--------|
+| *(none)* | List the external drives, confirm, then eject them all |
+| `--list` | List the external drives and exit — nothing is ejected |
+| `--force` | Force‑unmount each disk before ejecting (bypasses Spotlight / open‑file holds) |
+| `--yes` | Skip the confirmation and eject immediately (failures are force‑ejected too) |
+
+```bash
+fm.py eject --list          # see what's connected
+fm.py eject                 # eject everything after confirming
+fm.py eject --yes           # eject everything immediately (for scripts)
+```
+
+### Monitor — options
+
+| Option | Effect |
+|--------|--------|
+| `FOLDER` | The folder to watch (omit when using `--profile`) |
+| `--profile NAME` | Run a saved `monitorProfiles` entry from `fmConfig.json` (case‑insensitive) |
+| `--no-recursive` | Top‑level files only (default: recursive) |
+| `--ext jpg,png` | Only report files with these extensions (default: all files) |
+| `--csv` | Log events to `~/Documents/log/fmMonitor.csv` instead of `fm.log` |
+
+In the interactive menu, stop with **`[Q/ESC]`**; on the CLI, stop with
+**Ctrl‑C**.
+
+```bash
+fm.py monitor ~/Downloads --ext zip,dmg        # watch downloads, log to fm.log
+fm.py monitor ~/Documents/sites --csv          # everything, logged as CSV rows
+```
+
+### Sync — options
+
+| Option | Effect |
+|--------|--------|
+| `FOLDER_A FOLDER_B` | The two folders (omit both when using `--profile`) |
+| `--to b` | Push new/updated files **A → B** *(default)* |
+| `--to a` | Push new/updated files **B → A** |
+| `--profile NAME` | Run a saved `syncProfiles` entry from `fmConfig.json` (name match is case‑insensitive) |
+| `--conflict newest` | Both‑sides rule: copy only when the source file is **newer** *(default)* |
+| `--conflict largest` | Both‑sides rule: copy only when the source file is **larger** |
+| `--no-recursive` | Top‑level files only (default: recursive) |
+| `--include-hidden` | Include hidden files/folders (default: excluded) |
+| `--copy` | Actually copy (otherwise dry run) |
+| `--yes` | Skip the confirmation prompt (only meaningful with `--copy`) |
+
+```bash
+fm.py sync ~/Media /Volumes/CB9-2t/MediaBackup             # preview A→B (dry run)
+fm.py sync ~/Media /Volumes/CB9-2t/MediaBackup --copy      # copy after confirming
+fm.py sync --profile "Media to Backup" --copy --yes        # run a saved profile unattended
+```
+
 ### Zip — options
 
 | Option | Effect |
@@ -617,6 +1025,30 @@ fm.py find-missing /Volumes/DriveA/lostMedia /Volumes/DriveA/UncategorizedImages
 | `TARGET` | Folder whose immediate subfolders are zipped |
 | `DEST` | Where `.zip` files are written (default: current directory) |
 | `-r`, `--remove` | Remove each source folder after a **successful** zip (asks to confirm) |
+
+`fm.py zip-log TARGET` — log one `.zip`/`.tar` archive (or every archive in a
+folder, top level only) to the CB9Inventory database. No flags; requires the
+`logZip` section of `fmConfig.json`.
+
+### Cleanup — `what` and flags
+
+| What | Positional arg | Behavior |
+|------|----------------|----------|
+| `junk` | `ROOT` (required) | Find every `.DS_Store` / `desktop.ini` under ROOT (hidden folders included) and delete on confirm |
+| `logs` | `FOLDER` (default `~/Documents/log`) | Purge entries older than `--days` from every `.log` file; `.bak` backup before each rewrite |
+
+| Flag | Effect |
+|------|--------|
+| `--days N` | `logs` only: days of entries to keep (default **90**) |
+| `--delete` | Actually delete / purge (otherwise dry run) |
+| `--yes` | Skip the confirmation prompt (only meaningful with `--delete`) |
+
+```bash
+fm.py cleanup junk ~/Documents                    # dry run — list the junk files
+fm.py cleanup junk ~/Documents --delete           # delete after confirming
+fm.py cleanup logs                                # dry run — purge/keep table, 90 days
+fm.py cleanup logs ~/Documents/log --days 30 --delete --yes   # purge unattended
+```
 
 ---
 
@@ -677,6 +1109,40 @@ fm.py remove dup-hash /Volumes/DriveA/Media /Volumes/DriveB/Import          # pr
 fm.py remove dup-hash /Volumes/DriveA/Media /Volumes/DriveB/Import --delete # delete
 ```
 
+**Keep a backup drive current (push new/updated files, newest wins):**
+
+```bash
+fm.py sync ~/Media /Volumes/CB9-2t/MediaBackup             # dry run — review the preview
+fm.py sync ~/Media /Volumes/CB9-2t/MediaBackup --copy      # copy (confirms first)
+```
+
+**Watch a hot folder for new PDFs while you work:**
+
+```bash
+fm.py monitor ~/Downloads --ext pdf            # each arrival prints + logs; Ctrl-C stops
+```
+
+**Rename a setting across a whole PHP site (preview, then apply with backups):**
+
+```bash
+fm.py find-replace ~/Documents/sites/mysite "oldFunctionName" "newFunctionName" --ext php
+fm.py find-replace ~/Documents/sites/mysite "oldFunctionName" "newFunctionName" --ext php --apply --bak
+```
+
+**Monthly housekeeping — junk files gone, logs trimmed to 90 days:**
+
+```bash
+fm.py cleanup junk ~ --delete                  # confirm, then delete every .DS_Store/desktop.ini
+fm.py cleanup logs --delete                    # confirm, then purge old fm/claude/etc. log entries
+```
+
+**Back up, then eject every external drive (end‑of‑day):**
+
+```bash
+fm.py sync ~/Media /Volumes/CB9-2t/MediaBackup --copy --yes
+fm.py eject --yes
+```
+
 **Zip every subfolder of an import staging area into a temp folder:**
 
 ```bash
@@ -711,9 +1177,9 @@ fm.py zip-view /Volumes/BigDrive/ZipTemp        # browse & pick a zip from the f
 
 ---
 **Project:** File Management
-**Script:** `fm.py` — File Management
-**Version:** 1.22
+**Script:** `fm.py` — File Manager
+**Version:** 1.29
 **Maintainer / Owner:** Cloud Box 9 Inc.
-**Last Updated:** Jul 13, 2026
+**Last Updated:** Jul 14, 2026
 
 Copyright © 2026 Cloud Box 9 Inc. All rights reserved.

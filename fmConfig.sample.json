@@ -1,0 +1,58 @@
+{
+  "_metadata": {
+    "project": "File Manager",
+    "version": "1.0",
+    "lastUpdated": "2026-07-14",
+    "description": "SAMPLE configuration for fm.py — copy to fmConfig.json and edit. Shows the logZip API settings plus example syncProfiles and monitorProfiles entries."
+  },
+
+  "_help": {
+    "howToUse": "Copy this file to fmConfig.json (same folder as fm.py), then replace the sample values with your own. Keys starting with _ are documentation only and are ignored by fm.py.",
+    "logZip": "Used by Zip → Log Zip File. apiUrl points at the DocInfo Manager API endpoint; serverSecretKey authenticates the call — never commit a real key to a public repo.",
+    "syncProfiles": "Each entry appears as an option on the Sync menu and can run via: fm.py sync --profile NAME. Fields: name (menu label), folderA / folderB (~ is expanded), direction (AtoB or BtoA), recursive (true/false, default true), conflict (newest or largest — which side wins when a file exists on both sides; default newest), excludeHidden (true/false, default true). Sync always previews as a DRY RUN and only copies after you confirm; nothing is ever deleted.",
+    "monitorProfiles": "Each entry appears as an option on the Monitor menu and can run via: fm.py monitor --profile NAME. Fields: name (menu label), folder (~ is expanded), recursive (true/false, default true), extensions (comma-separated string like \"jpg,png\" or a list — blank/omitted watches all files), output (log = ~/Documents/log/fm.log, csv = ~/Documents/log/fmMonitor.csv; default log). Monitoring runs until you press Q/ESC."
+  },
+
+  "logZip": {
+    "apiUrl": "https://your-host.example.com/api/zipFileLog.php",
+    "serverSecretKey": "REPLACE-WITH-YOUR-SERVER-SECRET-KEY"
+  },
+
+  "syncProfiles": [
+    {
+      "name": "Documents to Backup Drive",
+      "folderA": "~/Documents",
+      "folderB": "/Volumes/Backup/Documents",
+      "direction": "AtoB",
+      "recursive": true,
+      "conflict": "newest",
+      "excludeHidden": true
+    },
+    {
+      "name": "Photos from Camera Card",
+      "folderA": "~/Pictures/Imports",
+      "folderB": "/Volumes/CAMERA/DCIM",
+      "direction": "BtoA",
+      "recursive": true,
+      "conflict": "largest",
+      "excludeHidden": true
+    }
+  ],
+
+  "monitorProfiles": [
+    {
+      "name": "Watch Downloads",
+      "folder": "~/Downloads",
+      "recursive": true,
+      "extensions": "",
+      "output": "log"
+    },
+    {
+      "name": "Watch Screenshots (CSV)",
+      "folder": "~/Documents/screenshots",
+      "recursive": false,
+      "extensions": "png,jpg,jpeg",
+      "output": "csv"
+    }
+  ]
+}

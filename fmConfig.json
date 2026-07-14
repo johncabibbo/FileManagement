@@ -1,13 +1,17 @@
 {
   "_metadata": {
     "project": "File Management",
-    "version": "1.0",
-    "lastUpdated": "2026-07-11",
-    "description": "Configuration for fm.py — Log Zip File API settings"
+    "version": "1.2",
+    "lastUpdated": "2026-07-14",
+    "description": "Configuration for fm.py — Log Zip File API settings, Sync profiles, and Monitor profiles"
   },
 
   "logZip": {
     "apiUrl": "https://your-host.example.com/api/zipFileLog.php",
     "serverSecretKey": "YOUR_SERVER_SECRET_KEY"
-  }
+  },
+
+  "syncProfiles": [],
+
+  "monitorProfiles": []
 }
