@@ -39,16 +39,21 @@ a full‑screen interactive menu:
 ```
 Compare  →  Compare 2 Files (side by side), Compare Folder Contents
                 (Recursive Y/N · By Name / Size / Both)
+Convert  →  Convert a data file: CSV / JSON / XLSX in → CSV / JSON / XLSX / SQL out
 Display  →  All Drives (size & free space) · Subfolder Sizes (alpha / largest first)
-Eject    →  Eject All External Drives (macOS)
 Find     →  Find Files (name · ext · size over/under, combined) · Find Folders
-                · Find Duplicates by Filename · Find Missing by Filename
+                · Find Duplicates by Filename · Find Duplicates by Fuzzy Name
+                · Find Missing by Filename
                 · Find Missing by Filename & Size (all show a size table per folder)
                 · Find & Replace (text in files — dry run, then confirm)
-Monitor  →  watch a folder for created/modified/deleted files in real time
-Remove   →  duplicates (by name / by hash) · by file name · by folder name
-Sync     →  push new/updated files A → B or B → A (profiles or interactive)
+                · Find & Rename (rename files — prepend / append / replace text)
+Eject    →  Eject All External Drives (macOS)
+Monitor  →  Watch a folder for created/modified/deleted files in real time
+Sync     →  Push new/updated files A → B, B → A, or two-way A ↔ B (profiles or interactive)
 Zip      →  View Zip · Log Zip File · Zip SubFolders
+Remove   →  Duplicates (by name / by hash / by fuzzy name) · by file name
+                · by folder name · files of 0 size
+Create Random UID  →  Generate N random UUIDs, one per line
 Clean Up →  Remove Junk Files (.DS_Store / desktop.ini) · Purge Old Log Files
 ```
 
@@ -96,9 +101,10 @@ Two capabilities were **added** beyond a literal merge:
 - **CLI subcommands** for every action — same engine, no prompts.
 - **Dry‑run‑by‑default** removals — preview first, delete only on explicit
   opt‑in.
-- **One‑way folder sync** — push new/updated files A → B or B → A, with
-  newest/largest conflict rules, saved profiles in `fmConfig.json`, and the
-  same preview‑first safety model (nothing is ever deleted).
+- **Folder sync** — push new/updated files A → B, B → A, or **two‑way A ↔ B**
+  (each side receives the other's new/updated files), with newest/largest
+  conflict rules, saved profiles in `fmConfig.json`, and the same
+  preview‑first safety model (nothing is ever deleted).
 - **Eject all external drives** (macOS) — lists the mounted external drives,
   confirms, ejects each with per‑drive status, and offers a force eject for
   drives that won't let go.
@@ -110,6 +116,16 @@ Two capabilities were **added** beyond a literal merge:
   replacement with an optional extension filter. Always a dry run first (every
   match shown with file, line number, and highlighted text), then an explicit
   confirm, with optional `.bak` backups of each modified file.
+- **Find & Rename** — find files (optionally by extension) and rename them by
+  **prepending** or **appending** text, or **replacing** text inside the
+  filename. Dry run first (`old → new` list), collision‑safe (never
+  overwrites), and already‑renamed files are skipped so reruns are safe.
+- **Data file conversion** — CSV / JSON / XLSX in, CSV / JSON / XLSX / SQL
+  out. SQL output builds a `CREATE TABLE` with column types guessed from the
+  data plus batched multi‑row `INSERT`s. Output lands beside the source, same
+  name, new extension, collision‑safe.
+- **Random UUID generation** — N random (version 4) UUIDs, one per line, for
+  database keys, tokens, and test data.
 - **Clean Up** — find and delete every `.DS_Store` / `desktop.ini` under a
   root folder, and purge log entries older than N days from every `.log` file
   in a folder (block‑aware, `.bak` backup before each rewrite). Both dry‑run
@@ -131,11 +147,13 @@ Two capabilities were **added** beyond a literal merge:
 | **Python ≥ 3.10** | The script shebang targets `/opt/homebrew/opt/python@3.12/libexec/bin/python3`. |
 | **CB9Lib** | Expected at `~/Documents/script/CB9Lib` (added to `sys.path` automatically). |
 | **`zip` command** | Used by **Zip SubFolders** (pre‑installed on macOS; `apt install zip` on Linux). |
+| **`openpyxl`** *(optional)* | Only for **Convert**'s XLSX input/output (`pip3 install openpyxl`). Every other format — and every other FM feature — works without it. |
 | **`diskutil`** (macOS) | Used by **Eject All External Drives** — this feature is macOS‑only. |
 | **macOS / Linux terminal** | ANSI colors and terminal‑width detection. Sounds use `afplay` (macOS). |
 
 No third‑party Python packages are required — only the standard library and
-CB9Lib.
+CB9Lib. (The one exception: `openpyxl`, optional, used solely for Convert's
+XLSX input/output.)
 
 ---
 
@@ -288,7 +306,7 @@ and can also be run from the CLI with `fm.py sync --profile NAME`:
 |-----|--------|---------|---------|
 | `name` | string | *(unnamed profile)* | Label shown in the Sync menu / matched by `--profile` |
 | `folderA` / `folderB` | paths (`~` ok) | — | The two folders |
-| `direction` | `AtoB` / `BtoA` | `AtoB` | Which side pushes its new/updated files |
+| `direction` | `AtoB` / `BtoA` / `Both` | `AtoB` | Which side pushes its new/updated files (`Both` = two‑way: each side receives the other's) |
 | `recursive` | `true` / `false` | `true` | Include subfolders |
 | `conflict` | `newest` / `largest` | `newest` | When a file exists on both sides, copy only if the source is newer / larger |
 | `excludeHidden` | `true` / `false` | `true` | Skip hidden files/folders (names starting with `.`) |
@@ -417,7 +435,37 @@ descriptions on screen):
 
 Hidden files/folders (names starting with `.`) are ignored throughout.
 
-### 2 · Display
+### 2 · Convert
+
+Convert a data file to another format. Enter the **path and filename** of the
+source file, then pick the **output format** — the new file is written next to
+the source with the **same name and the new extension**, collision‑safe
+(`name-2.ext`, `name-3.ext`, …) so nothing is ever overwritten.
+
+**Input formats** (the first row / object keys define the column headers):
+
+| Input | Notes |
+|-------|-------|
+| `.csv` | Delimiter sniffed (`,` `;` tab `\|`); UTF‑8 BOM tolerated |
+| `.json` | An array of objects (keys → headers, first‑seen order), an array of arrays (first array = header row), or a single object (one row) |
+| `.xlsx` | First sheet, first row = header (requires **openpyxl**) |
+
+**Output formats:**
+
+| Output | What you get |
+|--------|--------------|
+| **CSV** | Header row + data rows (RFC‑4180 quoting) |
+| **JSON** | Pretty‑printed array of objects (2‑space indent) |
+| **XLSX** | Single‑sheet Excel workbook (requires **openpyxl**) |
+| **SQL** | `CREATE TABLE` named after the file with **column types guessed from the data** (`TINYINT(1)`, `INT`, `BIGINT`, `DECIMAL(m,d)`, `DATE`, `DATETIME`, `VARCHAR(n)`, `TEXT`), then multi‑row `INSERT`s in 500‑row batches — empty cells become `NULL`, identifiers are sanitized and de‑duplicated |
+
+Rows shorter than the header are padded; extra cells beyond the header are
+dropped (the header row defines the columns). XLSX is the **only** format that
+needs a third‑party package — if `openpyxl` isn't installed the other formats
+still work, and a clear message tells you to `pip3 install openpyxl`.
+Results screens are appended to the activity log and offer **`[R]` Run Again**.
+
+### 3 · Display
 
 The Display menu has three options:
 
@@ -433,28 +481,9 @@ subfolders are listed A→Z or biggest‑first. Output columns (in order):
 **Folder** (always first), **Size (human‑readable)**, **Bytes
 (comma‑formatted)**, **File Count** — with a **TOTAL** row.
 
-### 3 · Eject  *(macOS)*
-
-**Eject All External Drives** — the equivalent of clicking every external
-drive's eject button at once:
-
-1. The mounted external drives are listed (name, size, mount point). External
-   = `diskutil info` reports `Internal: No`, a USB / Thunderbolt / SATA /
-   FireWire protocol, or removable media.
-2. Confirm **Eject all N drive(s)?** — the default is **No**.
-3. Each drive is ejected with a per‑drive **Success / Failed** status
-   (`diskutil eject`, falling back to Finder's eject via AppleScript).
-4. If any drive won't let go (Spotlight indexing, an app holding files open),
-   you're offered a **force eject** (`diskutil unmountDisk force`) for just
-   the failed drives.
-
-The drive list and results are appended to the
-[activity log](#logging--the-activity-log). Internal disks and the boot
-volume are never touched.
-
 ### 4 · Find
 
-The Find submenu has six options. All Find searches (and folder Compares)
+The Find submenu has seven options. All Find searches (and folder Compares)
 skip the Windows Recycle Bin folder (`$RECYCLE.BIN`) found on external drives,
 plus `.DS_Store` and `desktop.ini` junk files. (**Remove → By File Name** can
 still target `.DS_Store` / `desktop.ini` intentionally for cleanup.)
@@ -499,7 +528,36 @@ only — contents are not compared. Read‑only: nothing is changed.
 The results screen is also appended (plain text, timestamped) to the activity
 log at `~/Documents/log/fm.log`.
 
-**4. Find Missing by Filename** — enter **two folders**, then choose what to
+**4. Find Duplicates by Fuzzy Name** — enter **one or more folders**
+(comma‑separated). Each folder is scanned recursively (hidden files skipped)
+and files are grouped as duplicates when their **names are close** — not
+necessarily identical — **and their sizes are close** (within 1%). Example:
+`videofile1.mov` and `videofile.mov` at the same size are duplicates.
+
+Names count as close when the stems match after duplicate‑style endings are
+stripped — trailing digits, `(1)`, `[2]`, `copy`, `copy 2`, `- Copy` — or when
+they are 85%+ similar; the **extension must match** (`videofile.mov` never
+pairs with `videofile.txt`).
+
+Matches are clustered into groups, largest files first. In each group the
+**shortest/cleanest name is marked `KEEP`** and every other file is marked
+**`DELETE`** — so `videofile1.mov` is the one flagged to delete:
+
+```
+  1) videofile.mov
+     KEEP    videofile.mov        1.2G  /Volumes/CB9-2t/media
+     DELETE  videofile1.mov       1.2G  /Volumes/CB9-2t/media
+     DELETE  videofile2.mov       1.2G  /Volumes/CB9-2t/backup
+
+  1 fuzzy-duplicate group(s) — 2 DELETE candidate(s), 2.4 GB reclaimable. Nothing was deleted.
+```
+
+Read‑only: the `DELETE` marks are **candidates only** — nothing is deleted
+(use **Remove → Duplicates by Fuzzy Name** to actually delete). The
+results screen is also appended to the activity log at
+`~/Documents/log/fm.log`.
+
+**5. Find Missing by Filename** — enter **two folders**, then choose what to
 show:
 
 | Option | Shows |
@@ -517,7 +575,7 @@ column shows the directory actually containing each file. The Folder 1/2 list
 is repeated after the results, and the results screen is also appended to the
 activity log at `~/Documents/log/fm.log`. Read‑only: nothing is changed.
 
-**5. Find Missing by Filename & Size** — same flow as Find Missing by
+**6. Find Missing by Filename & Size** — same flow as Find Missing by
 Filename, but files only count as a match when **both the filename AND the
 file size agree**. A same‑named file whose size differs between the two
 folders is therefore also reported — with its size shown in **both** columns
@@ -534,7 +592,7 @@ Patterns use shell‑style wildcards: `*` (any run of chars), `?` (one char),
 `[abc]` (character set). When a size criterion is active, results are sorted
 largest‑first; otherwise alphabetically.
 
-**6. Find & Replace** — enter a **folder**, the **text to find**, the
+**7. Find & Replace** — enter a **folder**, the **text to find**, the
 **replacement text** (blank = remove the text), and an optional **file
 extension**. The folder is scanned recursively; hidden files/folders, binary
 files, and `.bak` files are skipped, and matching is **literal and
@@ -546,7 +604,59 @@ answering No exits with nothing changed. File bytes and line endings
 round‑trip unchanged apart from the replacement, and the results screen is
 appended to the activity log.
 
-### 5 · Monitor  *(real‑time)*
+**8. Find & Rename** — find files, then **rename** them. Enter a **folder**
+and an optional **file extension**, then choose how the text is applied:
+
+| Mode | You provide | Result |
+|------|-------------|--------|
+| **Prepend** | the text | Added to the **start** of the filename: `text.mov` → `api_text.mov`. Files already starting with the text are skipped, so reruns are safe. |
+| **Append** | the text | Inserted at the end of the name, **before the extension**: `text.mov` → `text_api.mov`. Files already ending with the text are skipped. |
+| **Replace** | find text + replacement | Replaces the text **inside the filename** (literal, case‑insensitive; blank replacement removes it): `draft_intro.mov` → `final_intro.mov`. Only files whose name contains the text are listed. |
+
+It is **always a dry run first** — every planned rename is listed
+`old → new` (paths shown relative to the folder), and nothing is touched
+until you confirm `[y/N]`:
+
+```
+  Folder : ~/Media
+  Mode   : Prepend (text + filename)
+  Text   : api_
+  Ext    : .mov
+
+  text.mov  ->  api_text.mov
+  sub/clip.mov  ->  api_clip.mov
+  SKIP intro.mov  ->  api_intro.mov  (target already exists)
+
+  DRY RUN — 2 file(s) would be renamed (1 already named that way,
+  1 skipped — target exists). Nothing has been changed.
+  Rename these 2 file(s)? [y/N]
+```
+
+A rename that would **overwrite an existing file** (or collide with another
+rename in the same run) is skipped and reported — nothing is ever
+overwritten. Hidden files, junk files, and `$RECYCLE.BIN` are never touched,
+and the results screen is appended to the activity log.
+
+### 5 · Eject  *(macOS)*
+
+**Eject All External Drives** — the equivalent of clicking every external
+drive's eject button at once:
+
+1. The mounted external drives are listed (name, size, mount point). External
+   = `diskutil info` reports `Internal: No`, a USB / Thunderbolt / SATA /
+   FireWire protocol, or removable media.
+2. Confirm **Eject all N drive(s)?** — the default is **No**.
+3. Each drive is ejected with a per‑drive **Success / Failed** status
+   (`diskutil eject`, falling back to Finder's eject via AppleScript).
+4. If any drive won't let go (Spotlight indexing, an app holding files open),
+   you're offered a **force eject** (`diskutil unmountDisk force`) for just
+   the failed drives.
+
+The drive list and results are appended to the
+[activity log](#logging--the-activity-log). Internal disks and the boot
+volume are never touched.
+
+### 6 · Monitor  *(real‑time)*
 
 **Monitor File Activity** — watch a folder and see every file event as it
 happens. The Monitor menu lists your saved **profiles** (see
@@ -582,38 +692,22 @@ third‑party packages. Hidden files are included; `.DS_Store` / `desktop.ini`
 junk and `$RECYCLE.BIN` are ignored. Read‑only: monitoring never changes the
 watched folder.
 
-### 6 · Remove  *(dry‑run by default)*
-
-Pick what to remove, supply the target(s), and **review the preview**. Nothing is
-deleted until you answer **Yes** to the confirmation.
-
-The menu options (in order):
-
-| # | Option | You provide | Behavior |
-|---|--------|-------------|----------|
-| 1 | **Duplicates by Name** | one or more folders (comma‑separated), optional extension | Groups files by name; **keeps the first**, lists the rest for removal |
-| 2 | **Duplicates by Hash** | one or more folders | Groups files by SHA‑256 content; **keeps the first**, lists the rest |
-| 3 | **By File Name** | search root + pattern | Previews every **file** whose name matches the wildcard, then deletes on confirm. Use `.DS_Store` or `desktop.ini` to clean junk files. |
-| 4 | **By Folder Name** | search root + pattern | Previews every **folder** whose name matches the wildcard (recursively) and removes each matching tree. Only top‑most matches are deleted (a matched parent already covers matched children). |
-
-After the preview you’ll see:
-
-> *This was a DRY RUN — nothing has been deleted yet.*
-> *Actually delete these N item(s)? [y/N]*
-
-Answer **`n`** (the default) to cancel; **`y`** to delete.
-
 ### 7 · Sync  *(dry‑run by default)*
 
-One‑way sync: **push new/updated files** from one folder into the other.
-Nothing is ever deleted, and nothing is copied until you confirm the preview.
+**Push new/updated files** from one folder into the other — one‑way (A → B or
+B → A) or **two‑way (A ↔ B)**, where both folders push to each other in one
+run and the conflict rule decides which copy wins when a file exists on both
+sides. Nothing is ever deleted, and nothing is copied until you confirm the
+preview.
 
 The Sync menu lists your saved **profiles** (see
 [Configuration → Sync profiles](#3-sync-profiles-fmconfigjson)) followed by
 **Interactive Sync**, which asks for:
 
 1. **Folder A** and **Folder B**.
-2. **Direction** — push new/updated files **A → B**, or **B → A**.
+2. **Direction** — push new/updated files **A → B**, **B → A**, or
+   **two‑way A ↔ B** (the two‑way preview shows a separate A → B and B → A
+   section).
 3. **If a file exists on both sides** — choose the **newest** (copy only when
    the source is newer — the default) or the **largest** (copy only when the
    source is larger).
@@ -650,7 +744,7 @@ skipped. The preview and copy results are appended to the
   pick from the zips inside it. Shows uncompressed/compressed sizes, per‑file
   compression ratio, modified date, and totals — without extracting.
 - **Log Zip File** — log a `.zip` / `.tar` archive (or every archive in a
-  folder, top level only) to the **CB9Inventory database** on a remote server via the
+  folder, top level only) to the **CB9Inventory database** on BPA5 via the
   DocInfo Manager API. Archives are matched by name + size (insert or update)
   and their file lists are synced. Requires the `logZip` section of
   `fmConfig.json` (`apiUrl`, `serverSecretKey`). `.gz` files are ignored.
@@ -659,7 +753,51 @@ skipped. The preview and copy results are appended to the
   whether to **remove source folders after a successful zip**. `.DS_Store` and
   `desktop.ini` are cleaned first; name collisions become `name-2.zip`, etc.
 
-### 9 · Clean Up  *(dry‑run by default)*
+### 9 · Remove  *(dry‑run by default)*
+
+Pick what to remove, supply the target(s), and **review the preview**. Nothing is
+deleted until you answer **Yes** to the confirmation.
+
+The menu options (in order):
+
+| # | Option | You provide | Behavior |
+|---|--------|-------------|----------|
+| 1 | **Duplicates by Name** | one or more folders (comma‑separated), optional extension | Groups files by name; **keeps the first**, lists the rest for removal |
+| 2 | **Duplicates by Hash** | one or more folders | Groups files by SHA‑256 content; **keeps the first**, lists the rest |
+| 3 | **Duplicates by Fuzzy Name** | one or more folders | Groups files whose **names are close** (duplicate‑style endings stripped — trailing digits, `(1)`, `copy` — or 85%+ similar; same extension) **and sizes are close** (within 1%). Example: `videofile1.mov` + `videofile.mov` at the same size — `videofile1.mov` is removed. **Keeps the shortest/cleanest name** in each group, lists the rest. Hidden files are skipped. |
+| 4 | **By File Name** | search root + pattern | Previews every **file** whose name matches the wildcard, then deletes on confirm. Use `.DS_Store` or `desktop.ini` to clean junk files. |
+| 5 | **By Folder Name** | search root + pattern | Previews every **folder** whose name matches the wildcard (recursively) and removes each matching tree. Only top‑most matches are deleted (a matched parent already covers matched children). |
+| 6 | **Files of 0 Size** | one or more folders | Lists every **empty (0‑byte) file** for removal — incomplete downloads, placeholders, failed copies. Hidden files/folders are skipped, so markers like `.gitkeep` are never touched. |
+
+Both Duplicates removals and Files of 0 Size accept **several folders
+comma‑separated**. Like the other Duplicates options, **Duplicates by Fuzzy
+Name requires typing the word `YES`** to delete (anything else cancels).
+
+After the preview you’ll see:
+
+> *This was a DRY RUN — nothing has been deleted yet.*
+> *Actually delete these N item(s)? [y/N]*
+
+Answer **`n`** (the default) to cancel; **`y`** to delete.
+
+### 10 · Create Random UID
+
+Enter **how many UUIDs you need** and get that many random (version 4) UUIDs,
+displayed **one per line**:
+
+```
+  Count: 3
+
+  550e8400-e29b-41d4-a716-446655440000
+  c86f2998-2f65-4220-bebd-a5e31f68c9b1
+  2cbcd92d-1651-4818-985f-05ea7f17eef4
+```
+
+Handy for database keys, API tokens, and test data. The count is capped at
+**10,000** per run. The list is also appended to the activity log (`fm.log`),
+and **`[R]` Run Again** regenerates a fresh batch with the same count.
+
+### 11 · Clean Up  *(dry‑run by default)*
 
 Two housekeeping tools. Like Remove, both **always preview first** — nothing
 is deleted or rewritten until you confirm.
@@ -709,6 +847,9 @@ Any subcommand runs non‑interactively and prints results without pausing. See
 ```
 fm.py compare-2files   FILE_A FILE_B
 fm.py compare-contents A B [--recursive] [--by name|size|both]
+fm.py convert FILE csv|json|xlsx|sql  # convert a .csv/.json/.xlsx data file; output
+                                      # beside it, same name, new ext, collision-safe
+fm.py uuid [N]                        # generate N random UUIDs, one per line (default 1)
 fm.py sizes [FOLDER] [--sort alpha|size]
 fm.py drives                          # size and free space of all mounted drives
 fm.py find folder PATTERN [ROOT]
@@ -718,19 +859,25 @@ fm.py find over   N       [ROOT]      # N = megabytes
 fm.py find under  N       [ROOT]      # N = megabytes
 fm.py find-files [ROOT] [--name PAT] [--ext E] [--over N] [--under N]   # combined AND
 fm.py find-dups  FOLDER...            # duplicate filenames, size table per folder
+fm.py find-fuzzy-dups FOLDER...       # close-name + close-size duplicates, KEEP/DELETE groups
 fm.py find-missing A B [--in first|second|either] [--size]   # filenames in only one folder
                                                               # --size: match name AND size
 fm.py find-replace ROOT SEARCH REPLACE [--ext E] [--apply] [--bak] [--yes]
                                       # find & replace text in files (dry run unless --apply)
+fm.py find-rename ROOT (--prepend TEXT | --append TEXT | --replace FIND NEW)
+                  [--ext E] [--apply] [--yes]
+                                      # find files and rename them (dry run unless --apply)
 fm.py remove folder      PATH        [--delete] [--yes]
 fm.py remove name        PATTERN ROOT [--delete] [--yes]   # files by name
 fm.py remove folder-name PATTERN ROOT [--delete] [--yes]   # folders by name
 fm.py remove dup-name    FOLDER...    [--delete] [--yes]
 fm.py remove dup-hash    FOLDER...    [--delete] [--yes]
+fm.py remove dup-fuzzy   FOLDER...    [--delete] [--yes]   # close name + close size
+fm.py remove zero-size   FOLDER...    [--delete] [--yes]   # empty 0-byte files
 fm.py eject [--list] [--force] [--yes]   # eject all external drives (macOS)
 fm.py monitor FOLDER [--no-recursive] [--ext jpg,png] [--csv]   # Ctrl-C stops
 fm.py monitor --profile NAME             # run a monitorProfiles entry from fmConfig.json
-fm.py sync FOLDER_A FOLDER_B [--to b|a] [--conflict newest|largest]
+fm.py sync FOLDER_A FOLDER_B [--to b|a|both] [--conflict newest|largest]
            [--no-recursive] [--include-hidden] [--copy] [--yes]
 fm.py sync --profile NAME             # run a syncProfiles entry from fmConfig.json
 fm.py zip-subfolders  TARGET [DEST] [-r|--remove]
@@ -785,6 +932,11 @@ rewrites.
 first, and files are only modified after the confirm — or, on the CLI, with
 `--apply` (plus `--yes` to skip the confirmation, and `--bak` for backups).
 
+**Find & Rename follows it for renaming:** the `old → new` list is always
+shown first, files are only renamed after the confirm (CLI: `--apply`, plus
+`--yes`), and a rename that would overwrite an existing file is skipped —
+nothing is ever overwritten.
+
 > 💡 **Tip:** Run any removal once with no flags (or in the menu) to inspect the
 > preview, then re‑run with `--delete` once you’re satisfied. The same applies
 > to `sync` — inspect the preview, then re‑run with `--copy`.
@@ -809,10 +961,14 @@ any editor.
 
 | Action | What is logged |
 |--------|----------------|
+| **Convert** | The file, from/to formats, output path, and the result |
+| **Create Random UID** | The count and the generated UUID list |
 | **Eject All External Drives** | The drive list + per‑drive eject results |
 | **Find → Find Duplicates by Filename** | Folder list + the duplicate‑filename size table |
+| **Find → Find Duplicates by Fuzzy Name** | Folder list + the KEEP/DELETE duplicate groups and reclaimable‑space summary |
 | **Find → Find Missing by Filename** (and **& Size**) | Folder 1/2 list + the missing‑filename table |
 | **Find → Find & Replace** | The settings header, the dry‑run match list (file · line number · line), and what was actually replaced |
+| **Find → Find & Rename** | The settings header, the dry‑run `old → new` list (including skipped collisions), and what was actually renamed |
 | **Monitor File Activity** | The session header, then each created/modified/deleted event **in real time**, and a closing summary. (With CSV output the events go to `~/Documents/log/fmMonitor.csv` instead.) |
 | **Sync** (profiles, interactive, and CLI) | The settings header, the NEW/UPDATE preview table, and what was actually copied |
 | Reruns via **`[R]` Run Again** | Each rerun is logged as a fresh timestamped entry |
@@ -822,7 +978,7 @@ Notes:
 - The log directory (`~/Documents/log/`) is created automatically if missing;
   a logging failure never interrupts the on‑screen output.
 - **Zip → Log Zip File** is different — it records archives to the
-  **CB9Inventory database** on a remote server (via the DocInfo Manager API), not to
+  **CB9Inventory database** on BPA5 (via the DocInfo Manager API), not to
   `fm.log`.
 - This information is also shown in the app itself: press **`H`** on the Main
   Menu — the Help screen ends with a **Logging** section.
@@ -907,6 +1063,20 @@ size column per folder. Read‑only — nothing is changed.
 fm.py find-dups /Volumes/CB9-2t/lostMedia /Volumes/CB9-2t/UncategorizedImages
 ```
 
+### `find-fuzzy-dups` — close‑name + close‑size duplicates
+
+Pass **one or more folders**; each is scanned recursively (hidden files
+skipped). Files are grouped as duplicates when their names are **close** (same
+stem after stripping duplicate‑style endings — trailing digits, `(1)`, `[2]`,
+`copy` — or 85%+ similar; extension must match) **and** their sizes are within
+1% of each other. Each group marks the shortest/cleanest name **KEEP** and the
+rest **DELETE**, with a reclaimable‑space total. Read‑only — the DELETE marks
+are candidates only; nothing is changed.
+
+```bash
+fm.py find-fuzzy-dups /Volumes/CB9-2t/media /Volumes/CB9-2t/backup
+```
+
 ### `find-missing` — filenames in only one of two folders
 
 Pass **exactly two folders**; each is scanned recursively (hidden files
@@ -949,6 +1119,30 @@ fm.py find-replace ~/Documents/sites/mysite "old-domain.com" "new-domain.com" --
 fm.py find-replace ~/Documents/sites/mysite "old-domain.com" "new-domain.com" --ext php --apply --bak
 ```
 
+### `find-rename` — find files and rename them
+
+`fm.py find-rename ROOT` scans ROOT recursively (hidden files/folders and
+junk names skipped) and renames the matching files. Exactly **one mode flag**
+is required. Without `--apply` it is a **dry run**: every planned rename is
+listed `old → new` and nothing is touched. A rename that would overwrite an
+existing file is skipped and reported — nothing is ever overwritten.
+
+| Flag | Effect |
+|------|--------|
+| `--prepend TEXT` | Add TEXT to the **start** of each filename (`text.mov` → `api_text.mov`); files already starting with TEXT are skipped |
+| `--append TEXT` | Insert TEXT at the end of the name, **before the extension** (`text.mov` → `text_api.mov`); files already ending with TEXT are skipped |
+| `--replace FIND NEW` | Replace FIND with NEW **inside the filename** (literal, case‑insensitive); use `""` for NEW to remove the text |
+| `--ext E` | Only files with extension `E` (e.g. `mov`) |
+| `--apply` | Actually rename (otherwise dry run) |
+| `--yes` | Skip the confirmation prompt (only meaningful with `--apply`) |
+
+```bash
+fm.py find-rename ~/Media --prepend api_ --ext mov            # dry run — the api_ example
+fm.py find-rename ~/Media --prepend api_ --ext mov --apply    # rename after confirming
+fm.py find-rename ~/Scans --append _2026 --ext pdf --apply
+fm.py find-rename ~/Media --replace draft_ final_ --apply --yes
+```
+
 ### Remove — `type` and flags
 
 | Type | Positional args | Notes |
@@ -958,6 +1152,8 @@ fm.py find-replace ~/Documents/sites/mysite "old-domain.com" "new-domain.com" --
 | `folder-name` | `PATTERN ROOT` | Remove **folders** matching a wildcard under ROOT (top‑most matches) |
 | `dup-name` | `FOLDER...` | Duplicate **names** across one or more folders (type **`YES`** to delete) |
 | `dup-hash` | `FOLDER...` | Duplicate **content** (SHA‑256) across folders (type **`YES`** to delete) |
+| `dup-fuzzy` | `FOLDER...` | **Close‑name + close‑size** duplicates — same grouping as Find Duplicates by Fuzzy Name; keeps the shortest/cleanest name per group (type **`YES`** to delete) |
+| `zero-size` | `FOLDER...` | **Empty (0‑byte) files**; hidden files/folders skipped |
 
 | Flag | Effect |
 |------|--------|
@@ -1004,6 +1200,7 @@ fm.py monitor ~/Documents/sites --csv          # everything, logged as CSV rows
 | `FOLDER_A FOLDER_B` | The two folders (omit both when using `--profile`) |
 | `--to b` | Push new/updated files **A → B** *(default)* |
 | `--to a` | Push new/updated files **B → A** |
+| `--to both` | **Two‑way A ↔ B** — each side receives the other's new/updated files |
 | `--profile NAME` | Run a saved `syncProfiles` entry from `fmConfig.json` (name match is case‑insensitive) |
 | `--conflict newest` | Both‑sides rule: copy only when the source file is **newer** *(default)* |
 | `--conflict largest` | Both‑sides rule: copy only when the source file is **larger** |
@@ -1129,6 +1326,13 @@ fm.py find-replace ~/Documents/sites/mysite "oldFunctionName" "newFunctionName" 
 fm.py find-replace ~/Documents/sites/mysite "oldFunctionName" "newFunctionName" --ext php --apply --bak
 ```
 
+**Tag every `.mov` that isn't already tagged with an `api_` prefix (preview, then apply):**
+
+```bash
+fm.py find-rename ~/Media --prepend api_ --ext mov            # dry run — text.mov -> api_text.mov
+fm.py find-rename ~/Media --prepend api_ --ext mov --apply    # rename after confirming
+```
+
 **Monthly housekeeping — junk files gone, logs trimmed to 90 days:**
 
 ```bash
@@ -1178,8 +1382,8 @@ fm.py zip-view /Volumes/BigDrive/ZipTemp        # browse & pick a zip from the f
 ---
 **Project:** File Management
 **Script:** `fm.py` — File Manager
-**Version:** 1.29
+**Version:** 1.38
 **Maintainer / Owner:** Cloud Box 9 Inc.
-**Last Updated:** Jul 14, 2026
+**Last Updated:** Jul 15, 2026
 
 Copyright © 2026 Cloud Box 9 Inc. All rights reserved.

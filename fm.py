@@ -2,13 +2,13 @@
 #
 # Filename: fm.py
 # Project: File Management
-# Version: 1.29
+# Version: 1.38
 # Description: File Manager — a unified interactive + CLI tool that combines
 #              the compare, display, eject, find, monitor, remove, sync, zip,
 #              and clean-up file-management scripts into a single CB9Lib-based
 #              program.
 # Maintainer: Cloud Box 9 Inc.
-# Last Modified Date: 2026-07-14
+# Last Modified Date: 2026-07-15
 #
 # Combines the functionality of:
 #   compareFilesRecursive.sh, compareSubFolders.sh, folderSizes.sh,
@@ -20,6 +20,10 @@
 #
 # Usage (CLI):
 #   fm.py compare-2files   FILE_A FILE_B
+#   fm.py convert FILE csv|json|xlsx|sql   (convert a .csv/.json/.xlsx data file;
+#                                           output written beside it, same name,
+#                                           new extension, collision-safe)
+#   fm.py uuid [N]                         (generate N random UUIDs, one per line)
 #   fm.py compare-contents A B [--recursive] [--by name|size|both]
 #   fm.py sizes [FOLDER] [--sort alpha|size]
 #   fm.py drives                          (size and free space of all mounted drives)
@@ -30,20 +34,28 @@
 #   fm.py find under  N       [ROOT]      (N = megabytes)
 #   fm.py find-files [ROOT] [--name PAT] [--ext E] [--over N] [--under N]   (combined AND)
 #   fm.py find-dups   FOLDER...           (duplicate filenames, size table per folder)
+#   fm.py find-fuzzy-dups FOLDER...       (close-name + close-size duplicates,
+#                                          grouped with KEEP/DELETE markers)
 #   fm.py find-missing A B [--in first|second|either] [--size]   (filenames in only one
 #                                          folder; --size also matches the file size)
 #   fm.py find-replace ROOT SEARCH REPLACE [--ext E] [--apply] [--bak] [--yes]
 #                                          (find & replace text in files; dry run
+#                                           unless --apply)
+#   fm.py find-rename ROOT (--prepend TEXT | --append TEXT | --replace FIND NEW)
+#                     [--ext E] [--apply] [--yes]
+#                                          (find files and rename them; dry run
 #                                           unless --apply)
 #   fm.py remove folder      PATH        [--delete] [--yes]
 #   fm.py remove name        PATTERN ROOT [--delete] [--yes]   (files by name)
 #   fm.py remove folder-name PATTERN ROOT [--delete] [--yes]   (folders by name)
 #   fm.py remove dup-name    FOLDER...    [--delete] [--yes]
 #   fm.py remove dup-hash    FOLDER...    [--delete] [--yes]
+#   fm.py remove dup-fuzzy   FOLDER...    [--delete] [--yes]   (close name + close size)
+#   fm.py remove zero-size   FOLDER...    [--delete] [--yes]   (empty 0-byte files)
 #   fm.py eject [--list] [--force] [--yes]   (eject all external drives — macOS)
 #   fm.py monitor FOLDER [--no-recursive] [--ext jpg,png] [--csv]   (Ctrl-C stops)
 #   fm.py monitor --profile NAME          (run a monitorProfiles entry from fmConfig.json)
-#   fm.py sync FOLDER_A FOLDER_B [--to b|a] [--conflict newest|largest]
+#   fm.py sync FOLDER_A FOLDER_B [--to b|a|both] [--conflict newest|largest]
 #              [--no-recursive] [--include-hidden] [--copy] [--yes]
 #   fm.py sync --profile NAME             (run a syncProfiles entry from fmConfig.json)
 #   fm.py zip-subfolders  TARGET [DEST] [-r]
@@ -59,6 +71,104 @@
 #
 # -----------------------------------------------------------------------------
 # Revision History:
+# -----------------------------------------------------------------------------
+# v1.38 (2026-07-15)
+#   • Remove menu: two new options. 3rd option "Duplicates by Fuzzy Name"
+#     (grouped with the other Duplicates removals) — same close-name +
+#     close-size grouping as Find Duplicates by Fuzzy Name (shared
+#     _fuzzy_dup_groups() helper, extracted from _find_fuzzy_dups_screen);
+#     keeps the shortest/cleanest name per group, removes the rest. Typed
+#     YES required to delete. 6th (last) option "Files of 0 Size" — lists
+#     every empty (0-byte) file under the entered folders for removal;
+#     hidden files/folders skipped (protects .gitkeep-style markers);
+#     standard dry-run + confirm. By File Name / By Folder Name renumbered
+#     to 4/5. New remove_duplicates_by_fuzzy_name(),
+#     remove_zero_size_files(). CLI: fm.py remove dup-fuzzy FOLDER... and
+#     fm.py remove zero-size FOLDER... [--delete] [--yes].
+# -----------------------------------------------------------------------------
+# v1.37 (2026-07-15)
+#   • Find menu: new 4th option "Find Duplicates by Fuzzy Name" (after Find
+#     Duplicates by Filename) — finds files whose names are CLOSE (not
+#     necessarily identical) AND whose sizes are close (within 1%). Example:
+#     videofile1.mov and videofile.mov at the same size are duplicates.
+#     Close names = same stem after stripping duplicate-style endings
+#     (trailing digits, "(1)", "[2]", "copy", "copy 2") or 85%+ difflib
+#     similarity; extensions must match. Matches are clustered into groups;
+#     each group marks the shortest/cleanest name KEEP and the rest DELETE
+#     (candidates only — read-only, nothing is deleted). Groups sort largest
+#     file first; summary shows group/candidate counts + reclaimable bytes.
+#     New find_duplicates_by_fuzzy_name(), _find_fuzzy_dups_screen(),
+#     _fuzzy_stem(), _names_close(), _sizes_close(). Later Find options
+#     renumbered (Missing 5/6, Find & Replace 7, Find & Rename 8).
+#     CLI: fm.py find-fuzzy-dups FOLDER...
+# -----------------------------------------------------------------------------
+# v1.36 (2026-07-15)
+#   • Sync: new two-way direction (A ↔ B) — both folders push to each other in
+#     one run. Files only in A are copied to B, files only in B are copied to
+#     A, and when a file exists on both sides the copy that wins the conflict
+#     rule (newest/largest) replaces the other; ties are skipped. Still a DRY
+#     RUN preview first (grouped A → B and B → A sections) and nothing is ever
+#     deleted. Interactive: third Direction option "Two-way sync A ↔ B".
+#     Profiles: direction accepts Both (also 2way/twoway). CLI: --to both.
+#     Added _parse_sync_direction(); _sync_screen now plans/copies in passes.
+# -----------------------------------------------------------------------------
+# v1.35 (2026-07-15)
+#   • Sync: zero-byte source files are never copied (_sync_plan skips them and
+#     reports a "Skipped N zero-byte file(s)" note instead). Prevents
+#     incomplete/placeholder 0-byte files from overwriting good files on the
+#     destination side.
+# -----------------------------------------------------------------------------
+# v1.34 (2026-07-14)
+#   • Main Menu labels: capitalized the first letter after the em-dash on all
+#     11 options (e.g. "Compare  — compare 2 files…" → "Compare  — Compare 2
+#     files…"). README overview block matched. Cosmetic only.
+# -----------------------------------------------------------------------------
+# v1.33 (2026-07-14)
+#   • Main Menu reordered (per spec — no longer alphabetical): 1. Compare
+#     2. Convert  3. Display  4. Find  5. Eject  6. Monitor  7. Sync  8. Zip
+#     9. Remove  10. Create Random UID  11. Clean Up. Dispatch, [H] Help
+#     order, and the menu intro line updated to match; no feature changes.
+# -----------------------------------------------------------------------------
+# v1.32 (2026-07-14)
+#   • Find menu: new 7th (last) option "Find & Rename" — find files, then
+#     rename them. Enter a folder, an optional file extension, and a mode:
+#     Prepend (text.mov -> api_text.mov; files already starting with the
+#     text are skipped), Append (inserted before the extension:
+#     text.mov -> text_api.mov; files already ending with it are skipped),
+#     or Replace (literal case-insensitive replacement inside the filename;
+#     blank replacement removes the text; only matching files are listed).
+#     ALWAYS dry-runs first, listing every rename old -> new; renames that
+#     would overwrite an existing file (or another rename in the same run)
+#     are skipped and reported. Hidden/excluded files are never touched.
+#     New find_and_rename()/_find_rename_screen(); results screens log to
+#     fm.log and offer [R] Run Again. CLI: fm.py find-rename ROOT
+#     (--prepend TEXT | --append TEXT | --replace FIND NEW) [--ext E]
+#     [--apply] [--yes].
+# -----------------------------------------------------------------------------
+# v1.31 (2026-07-14)
+#   • Main Menu: new "Create Random UID" option (3rd, keeping the menu
+#     alphabetical; Clean Up stays last) — enter a number N and get N random
+#     (version 4) UUIDs displayed one per line (capped at 10,000). The list
+#     logs to fm.log; [R] Run Again regenerates a fresh batch with the same
+#     count. New generate_uuids()/_uuid_screen()/create_random_uid_menu().
+#     CLI: fm.py uuid [N] (default 1).
+# -----------------------------------------------------------------------------
+# v1.30 (2026-07-14)
+#   • Main Menu: new "Convert" option (2nd, keeping the menu alphabetical;
+#     Clean Up stays last) — convert a data file between formats. Input:
+#     .csv (delimiter sniffed, BOM tolerated), .json (array of objects or
+#     array of arrays), .xlsx (first sheet; via openpyxl). Output: CSV,
+#     JSON (pretty-printed array of objects), XLSX (openpyxl — only format
+#     needing a package; a clear message says pip3 install openpyxl if
+#     missing), or SQL (CREATE TABLE named after the file with column types
+#     guessed per column — TINYINT(1)/INT/BIGINT/DECIMAL/DATE/DATETIME/
+#     VARCHAR(n)/TEXT — plus multi-row INSERTs in 500-row batches; empty
+#     cells become NULL, identifiers sanitized + de-duplicated). Output is
+#     written beside the source with the same name and new extension,
+#     collision-safe (name-2.ext, …) — never overwrites. Results screens log
+#     to fm.log and offer [R] Run Again. New convert_menu()/convert_file()/
+#     _read_table()/writers/_unique_path(). CLI: fm.py convert FILE
+#     csv|json|xlsx|sql.
 # -----------------------------------------------------------------------------
 # v1.29 (2026-07-14)
 #   • Find menu: new 6th (last) option "Find & Replace" — enter a folder, the
@@ -208,7 +318,7 @@
 # v1.13 (2026-07-11)
 #   • Zip menu: new 2nd option "Log Zip File" — logs a .zip/.tar archive (or
 #     every archive in a folder, top level only) to the CB9Inventory database
-#     on a remote server via the DocInfo Manager API (api/zipFileLog.php). zipFile rows
+#     on BPA5 via the DocInfo Manager API (api/zipFileLog.php). zipFile rows
 #     are matched by name+size (insert or update); zipFileContent is synced
 #     (update by path, insert new, soft-delete missing). .gz files are ignored.
 #   • New fmConfig.json (logZip: apiUrl, serverSecretKey) + CLI: fm.py zip-log.
@@ -313,6 +423,7 @@ import difflib
 import re
 import textwrap
 import json
+import uuid
 import urllib.request
 import urllib.parse
 from datetime import datetime
@@ -331,7 +442,7 @@ from CB9Lib import (
 # Constants
 # -----------------------------------------------------------------------------
 SCRIPT_NAME = "File Manager"
-VERSION     = "1.29"
+VERSION     = "1.38"
 VER         = f"v{VERSION}"
 
 SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -923,6 +1034,374 @@ def display_all_drives():
 
 
 # =============================================================================
+# CONVERT  (CSV / JSON / XLSX / SQL)
+# =============================================================================
+CONVERT_IN_FORMATS  = ("csv", "json", "xlsx")
+CONVERT_OUT_FORMATS = ("csv", "json", "xlsx", "sql")
+
+
+def _unique_path(path):
+    """Collision-safe output path: name.ext, name-2.ext, name-3.ext, …
+    (same convention as Zip SubFolders). Never overwrites."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(f"{base}-{n}{ext}"):
+        n += 1
+    return f"{base}-{n}{ext}"
+
+
+def _require_openpyxl():
+    """Import openpyxl on demand. XLSX is the only format that needs a
+    third-party package; everything else is stdlib."""
+    try:
+        import openpyxl
+        return openpyxl
+    except ImportError:
+        raise ValueError("XLSX support requires the openpyxl package — "
+                         "install it with: pip3 install openpyxl")
+
+
+def _json_cell(value):
+    """Flatten a JSON value to a table cell (nested dict/list → JSON text)."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return "" if value is None else value
+
+
+def _read_table(path):
+    """Read a .csv / .json / .xlsx file into (headers, rows).
+
+    csv  : first row = header (delimiter sniffed: , ; tab |; BOM tolerated)
+    json : array of objects (headers = union of keys, first-seen order) or
+           array of arrays (first array = header); a single object = one row
+    xlsx : first sheet, first row = header (needs openpyxl)
+
+    Raises ValueError with a user-friendly message on anything invalid.
+    """
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    if ext == "csv":
+        with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+            sample = fh.read(4096)
+            fh.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            except csv.Error:
+                dialect = csv.excel
+            data = list(csv.reader(fh, dialect))
+        if not data:
+            raise ValueError("The CSV file is empty.")
+        return [str(h) for h in data[0]], data[1:]
+
+    if ext == "json":
+        with open(path, encoding="utf-8") as fh:
+            try:
+                data = json.load(fh)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON: {e}")
+        if isinstance(data, dict):
+            data = [data]
+        if not isinstance(data, list) or not data:
+            raise ValueError("JSON must be a non-empty array of objects "
+                             "(or an array of arrays with a header row).")
+        if isinstance(data[0], dict):
+            headers = []
+            for rec in data:
+                if not isinstance(rec, dict):
+                    raise ValueError("JSON array mixes objects with non-objects.")
+                for k in rec:
+                    if k not in headers:
+                        headers.append(k)
+            rows = [[_json_cell(rec.get(h)) for h in headers] for rec in data]
+            return headers, rows
+        if isinstance(data[0], list):
+            return [str(h) for h in data[0]], [list(r) for r in data[1:]]
+        raise ValueError("Unsupported JSON structure — expected an array of "
+                         "objects or an array of arrays.")
+
+    if ext == "xlsx":
+        opx = _require_openpyxl()
+        wb = opx.load_workbook(path, read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        data = [["" if c is None else c for c in row]
+                for row in ws.iter_rows(values_only=True)]
+        wb.close()
+        if not data:
+            raise ValueError("The XLSX file has no rows on its first sheet.")
+        return [str(h) for h in data[0]], data[1:]
+
+    raise ValueError(f"Unsupported input type .{ext} — "
+                     "supported inputs: .csv, .json, .xlsx")
+
+
+def _write_csv_out(path, headers, rows):
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(headers)
+        w.writerows(rows)
+
+
+def _write_json_out(path, headers, rows):
+    records = []
+    for r in rows:
+        r = list(r) + [""] * (len(headers) - len(r))
+        records.append(dict(zip(headers, r)))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(records, fh, indent=2, ensure_ascii=False, default=str)
+        fh.write("\n")
+
+
+def _write_xlsx_out(path, headers, rows):
+    opx = _require_openpyxl()
+    wb = opx.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append([str(h) for h in headers])
+    for r in rows:
+        ws.append([c if isinstance(c, (int, float, bool, datetime)) or c is None
+                   else str(c) for c in r])
+    wb.save(path)
+
+
+# --- SQL output ---------------------------------------------------------------
+_SQL_INT_RE  = re.compile(r"^-?\d+$")
+_SQL_DEC_RE  = re.compile(r"^-?\d+\.\d+$")
+_SQL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SQL_DT_RE   = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
+
+
+def _sql_ident(name):
+    """Sanitize a name into a safe SQL identifier (backtick-quoted later)."""
+    ident = re.sub(r"[^A-Za-z0-9_]", "_", str(name).strip()) or "col"
+    if ident[0].isdigit():
+        ident = "_" + ident
+    return ident
+
+
+def _sql_guess_type(values):
+    """Guess a MySQL column type from a column's non-empty values:
+    INT/BIGINT → DECIMAL → DATE → DATETIME → VARCHAR(n) → TEXT."""
+    vals = [v for v in values if v is not None and str(v).strip() != ""]
+    if not vals:
+        return "VARCHAR(255)"
+    strs = [str(v) for v in vals]
+    if all(isinstance(v, bool) for v in vals):
+        return "TINYINT(1)"
+    if all(_SQL_INT_RE.match(s) for s in strs):
+        return "BIGINT" if any(abs(int(s)) > 2147483647 for s in strs) else "INT"
+    if all(_SQL_INT_RE.match(s) or _SQL_DEC_RE.match(s) for s in strs):
+        whole = max(len(s.split(".")[0].lstrip("-")) for s in strs)
+        frac  = max((len(s.split(".")[1]) if "." in s else 0) for s in strs)
+        return f"DECIMAL({min(whole + frac, 65)},{min(frac, 30)})"
+    if all(_SQL_DATE_RE.match(s) for s in strs):
+        return "DATE"
+    if all(_SQL_DT_RE.match(s) or _SQL_DATE_RE.match(s) for s in strs):
+        return "DATETIME"
+    longest = max(len(s) for s in strs)
+    if longest > 255:
+        return "TEXT"
+    # round up to the next 25 so similar columns get tidy consistent widths
+    return f"VARCHAR({max(25, ((longest + 24) // 25) * 25)})"
+
+
+def _sql_value(value, col_type):
+    """Render one value for an INSERT: NULL for empty, bare numbers for
+    numeric columns, otherwise a quoted + escaped string literal."""
+    if value is None or str(value).strip() == "":
+        return "NULL"
+    s = str(value)
+    if col_type.startswith(("INT", "BIGINT", "DECIMAL", "TINYINT")):
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if _SQL_INT_RE.match(s) or _SQL_DEC_RE.match(s):
+            return s
+    return "'" + s.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _write_sql_out(path, headers, rows, table):
+    """CREATE TABLE (guessed column types) + multi-row INSERTs (500/batch)."""
+    table = _sql_ident(table)
+    cols = []
+    seen = set()
+    for h in headers:                       # de-duplicate sanitized names
+        c = base = _sql_ident(h)
+        n = 2
+        while c in seen:
+            c = f"{base}_{n}"; n += 1
+        seen.add(c)
+        cols.append(c)
+    types = [_sql_guess_type([r[i] if i < len(r) else "" for r in rows])
+             for i in range(len(headers))]
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(f"-- Generated by File Manager v{VERSION} on "
+                 f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        fh.write(f"-- Source rows: {len(rows)}\n\n")
+        fh.write(f"CREATE TABLE `{table}` (\n")
+        fh.write(",\n".join(f"    `{c}` {t}" for c, t in zip(cols, types)))
+        fh.write("\n);\n\n")
+        col_list = ", ".join(f"`{c}`" for c in cols)
+        for start in range(0, len(rows), 500):
+            batch = rows[start:start + 500]
+            fh.write(f"INSERT INTO `{table}` ({col_list}) VALUES\n")
+            lines = []
+            for r in batch:
+                r = list(r) + [""] * (len(cols) - len(r))
+                lines.append("(" + ", ".join(
+                    _sql_value(r[i], types[i]) for i in range(len(cols))) + ")")
+            fh.write(",\n".join(lines) + ";\n\n")
+
+
+_CONVERT_WRITERS = {
+    "csv":  _write_csv_out,
+    "json": _write_json_out,
+    "xlsx": _write_xlsx_out,
+}
+
+
+def convert_file(path, out_format):
+    """Convert a CSV/JSON/XLSX data file to CSV, JSON, XLSX, or SQL.
+
+    The output file is written next to the source with the same name and the
+    new extension — collision-safe (name-2.ext, …), never overwriting. SQL
+    output is a CREATE TABLE (types guessed per column) plus multi-row
+    INSERTs, with the table named after the file. The results screen is
+    appended to ~/Documents/log/fm.log and offers [R] Run Again.
+    """
+    while True:
+        with _ActivityLog():
+            _convert_screen(path, out_format)
+        if not pause_rerun():
+            return
+
+
+def _convert_screen(path, out_format):
+    screen("Convert")
+    print()
+    out_format = str(out_format).lower().lstrip(".")
+    in_ext = os.path.splitext(path)[1].lower().lstrip(".")
+    print(f"  {YELLOW}File{RESET}  : {path}")
+    print(f"  {YELLOW}From{RESET}  : .{in_ext}    {YELLOW}To{RESET}: .{out_format}\n")
+    if not os.path.isfile(path):
+        print(color_text(f"  Not a file: {path}", fg=RED))
+        return
+    if out_format not in CONVERT_OUT_FORMATS:
+        print(color_text(f"  Unsupported output format .{out_format} — "
+                         f"choose one of: {', '.join(CONVERT_OUT_FORMATS)}", fg=RED))
+        return
+
+    out_path = _unique_path(os.path.splitext(path)[0] + "." + out_format)
+    try:
+        headers, rows = _read_table(path)
+        # The header row defines the columns: pad short rows, drop extras.
+        width = len(headers)
+        rows = [(list(r) + [""] * width)[:width] for r in rows]
+        if out_format == "sql":
+            table = os.path.splitext(os.path.basename(path))[0]
+            _write_sql_out(out_path, headers, rows, table)
+        else:
+            _CONVERT_WRITERS[out_format](out_path, headers, rows)
+    except ValueError as e:
+        report_result(False, "", str(e))
+        return
+    except OSError as e:
+        report_result(False, "", f"File error: {e}")
+        return
+
+    print(f"  {YELLOW}Output{RESET}: {out_path}")
+    print(f"  {YELLOW}Size{RESET}  : {fmt_size(file_size(out_path))}\n")
+    report_result(True,
+                  f"Converted {len(rows):,} row(s) × {len(headers)} column(s) "
+                  f"to .{out_format}.")
+
+
+def convert_menu():
+    """Convert flow: pick the file, pick the output format, convert."""
+    path = ask_file("File to convert (.csv, .json, .xlsx)")
+    if not path:
+        pause_return()
+        return
+    in_ext = os.path.splitext(path)[1].lower().lstrip(".")
+    if in_ext not in CONVERT_IN_FORMATS:
+        print(color_text(f"  Unsupported input type .{in_ext} — "
+                         "supported: .csv, .json, .xlsx", fg=RED))
+        pause_return()
+        return
+    options = [
+        ("CSV",
+         "Comma-separated values with a header row — opens anywhere "
+         "(Excel, Numbers, imports)."),
+        ("JSON",
+         "An array of objects, one per row, pretty-printed (2-space indent) — "
+         "for APIs, scripts, and config-style data."),
+        ("XLSX",
+         "An Excel workbook with the data on a single sheet (header row "
+         "first). Requires the openpyxl package (pip3 install openpyxl) — "
+         "the other formats work without it."),
+        ("SQL",
+         "A MySQL script: CREATE TABLE named after the file with column types "
+         "guessed from the data (INT, DECIMAL, DATE, DATETIME, VARCHAR, "
+         "TEXT), then multi-row INSERT statements (500 rows per batch). "
+         "Empty cells become NULL."),
+    ]
+    ch = render_menu("Convert — Output Format", options,
+                     outro=[f"File - {path}"])
+    if ch == "back":
+        return
+    convert_file(path, CONVERT_OUT_FORMATS[int(ch) - 1])
+
+
+# =============================================================================
+# CREATE RANDOM UID
+# =============================================================================
+UUID_MAX = 10000
+
+
+def generate_uuids(count):
+    """Generate `count` random (version 4) UUIDs and show them one per line.
+    The list is also appended to ~/Documents/log/fm.log; [R] reruns with the
+    same count (new UUIDs each time)."""
+    while True:
+        with _ActivityLog():
+            _uuid_screen(count)
+        if not pause_rerun():
+            return
+
+
+def _uuid_screen(count):
+    screen("Create Random UID")
+    print()
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        print(color_text("  Invalid number.", fg=RED))
+        return
+    if count < 1:
+        print(color_text("  Enter a number of 1 or more.", fg=RED))
+        return
+    if count > UUID_MAX:
+        print(color_text(f"  Capped at {UUID_MAX:,}.", fg=YELLOW))
+        count = UUID_MAX
+    print(f"  {YELLOW}Count{RESET}: {count:,}\n")
+    for _ in range(count):
+        print(f"  {uuid.uuid4()}")
+    print()
+    print(color_text(f"  {count:,} UUID(s) generated.", fg=BRIGHT_CYAN, style=BOLD))
+
+
+def create_random_uid_menu():
+    raw = ask("How many UUIDs to generate?", "1")
+    try:
+        count = int(raw)
+    except ValueError:
+        print(color_text("  Invalid number.", fg=RED))
+        pause_return()
+        return
+    generate_uuids(count)
+
+
+# =============================================================================
 # FIND
 # =============================================================================
 def _print_find_results(results, kind, extra=None):
@@ -1215,6 +1694,142 @@ def _find_duplicates_screen(folders):
     print(color_text(f"  {len(dups)} duplicated filename(s) found.", fg=BRIGHT_CYAN, style=BOLD))
 
 
+FUZZY_NAME_RATIO     = 0.85   # difflib similarity threshold for "close" names
+FUZZY_SIZE_TOLERANCE = 0.01   # sizes within 1% of each other count as "close"
+
+# Duplicate-style name endings stripped before stems are compared:
+# "video1", "video (1)", "video[2]", "video copy", "video copy 2", "video - Copy"
+_FUZZY_SUFFIX_RE = re.compile(
+    r"[ _\-.]*(?:\(\d+\)|\[\d+\]|copy(?:[ _\-]*\d+)?|\d+)$", re.IGNORECASE)
+
+
+def _fuzzy_stem(stem):
+    """Comparison key for a filename stem: lowercased, duplicate-style endings
+    stripped, runs of separators collapsed to a single space."""
+    s = _FUZZY_SUFFIX_RE.sub("", stem.lower())
+    return re.sub(r"[ _\-.]+", " ", s).strip()
+
+
+def _sizes_close(a, b):
+    return abs(a - b) <= max(a, b) * FUZZY_SIZE_TOLERANCE
+
+
+def _names_close(stem_a, stem_b):
+    ka, kb = _fuzzy_stem(stem_a), _fuzzy_stem(stem_b)
+    if ka and ka == kb:
+        return True
+    return difflib.SequenceMatcher(
+        None, stem_a.lower(), stem_b.lower()).ratio() >= FUZZY_NAME_RATIO
+
+
+def find_duplicates_by_fuzzy_name(folders):
+    """Find files whose names are CLOSE (not necessarily identical) and whose
+    sizes are close — read-only, nothing is changed.
+
+    Each folder is scanned recursively (hidden files/folders skipped). Two
+    files count as fuzzy duplicates when their extension matches, their sizes
+    are within FUZZY_SIZE_TOLERANCE of each other, and their name stems either
+    match after duplicate-style endings are stripped (videofile1 ~ videofile,
+    photo (2) ~ photo, doc copy ~ doc) or are FUZZY_NAME_RATIO similar.
+    Matches are clustered into groups; in each group the shortest/cleanest
+    name is marked KEEP and the rest DELETE — candidates only, nothing is
+    deleted. The screen output is also appended to ~/Documents/log/fm.log.
+    """
+    while True:
+        with _ActivityLog():
+            _find_fuzzy_dups_screen(folders)
+        if not pause_rerun():
+            return
+
+
+def _fuzzy_dup_groups(folders):
+    """Cluster every file under the given folders into fuzzy-duplicate groups:
+    close name (_names_close) + same extension + size within
+    FUZZY_SIZE_TOLERANCE. Returns a list of groups of (name, stem, ext, size,
+    dir) tuples — each group sorted with the KEEP candidate (shortest/cleanest
+    name) first, groups sorted largest file first. Groups have 2+ members."""
+    # Flatten every occurrence across all folders: (name, stem, ext, size, dir)
+    files = []
+    for occ in _scan_filenames(folders):
+        for name, entries in occ.items():
+            stem, ext = os.path.splitext(name)
+            for (size, dp) in entries:
+                files.append((name, stem, ext.lower(), size, dp))
+
+    # Sort by extension then size so only a nearby window needs pairwise name
+    # comparison — once the size gap exceeds the tolerance it only grows, so
+    # the inner scan can stop there.
+    files.sort(key=lambda f: (f[2], f[3]))
+
+    parent = list(range(len(files)))
+
+    def _root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(files)):
+        for j in range(i + 1, len(files)):
+            if files[j][2] != files[i][2] or not _sizes_close(files[i][3], files[j][3]):
+                break
+            if _names_close(files[i][1], files[j][1]):
+                parent[_root(j)] = _root(i)
+
+    groups = defaultdict(list)
+    for i in range(len(files)):
+        groups[_root(i)].append(files[i])
+    dup_groups = [g for g in groups.values() if len(g) > 1]
+
+    # KEEP the shortest (cleanest) name; largest files first overall.
+    for g in dup_groups:
+        g.sort(key=lambda f: (len(f[0]), f[0].lower(), f[4]))
+    dup_groups.sort(key=lambda g: -max(f[3] for f in g))
+    return dup_groups
+
+
+def _find_fuzzy_dups_screen(folders):
+    screen("Find Duplicates by Fuzzy Name")
+    print()
+
+    folders = [clean_path(f) for f in folders if f]
+    valid = [f for f in folders if os.path.isdir(f)]
+    for f in folders:
+        if f not in valid:
+            print(color_text(f"  Skipping (not a directory): {f}", fg=YELLOW))
+    if not valid:
+        print(color_text("  No valid folders to scan.", fg=RED))
+        return
+
+    # Numbered folder header
+    for i, folder in enumerate(valid, 1):
+        print(f"  {YELLOW}{i}{RESET} - {folder}")
+    print()
+
+    dup_groups = _fuzzy_dup_groups(valid)
+    if not dup_groups:
+        print(color_text("  No fuzzy-duplicate files found.", fg=YELLOW))
+        return
+
+    name_w = min(max(len(f[0]) for g in dup_groups for f in g), 50)
+    del_count = del_bytes = 0
+    for n, group in enumerate(dup_groups, 1):
+        print(color_text(f"  {n}) {group[0][0]}", style=BOLD))
+        for k, (name, _stem, _ext, size, dp) in enumerate(group):
+            tag = (color_text("KEEP  ", fg=BRIGHT_CYAN, style=BOLD) if k == 0
+                   else color_text("DELETE", fg=BRIGHT_YELLOW, style=BOLD))
+            print(f"     {tag}  {name:<{name_w}}  {fmt_size_short(size):>8}  {dp}")
+            if k:
+                del_count += 1
+                del_bytes += size
+        print()
+
+    print(color_text(
+        f"  {len(dup_groups)} fuzzy-duplicate group(s) — {del_count} DELETE "
+        f"candidate(s), {fmt_size(del_bytes)} reclaimable. Nothing was deleted.",
+        fg=BRIGHT_CYAN, style=BOLD))
+
+
 def find_missing_by_filename(folder_a, folder_b, mode="either", match_size=False):
     """Compare two folders by filename and list files present in only ONE of
     them (missing from the other) — read-only, nothing is changed.
@@ -1447,6 +2062,165 @@ def _find_replace_screen(root, search, replace, ext, live_requested,
         f"Replaced {total:,} occurrence(s) in {ok} file(s)."
         + (" Backups saved with a .bak extension." if make_bak else ""),
         f"Replaced in {ok} file(s), {fail} failed.")
+
+
+def find_and_rename(root, mode, text, replace_with=None, ext=None,
+                    live_requested=None, assume_yes=False):
+    """Find files under a folder and rename them.
+
+    mode: 'prepend' — new name = text + filename (files already starting
+                      with the text are skipped)
+          'append'  — text is inserted at the end of the name, BEFORE the
+                      extension (files already ending with it are skipped)
+          'replace' — occurrences of `text` inside the filename are replaced
+                      with `replace_with` (matching is literal and
+                      case-insensitive; only matching files are listed)
+
+    ALWAYS a dry run first: every planned rename is listed old → new before
+    anything is touched. Renames that would collide with an existing file
+    (or with another rename in the same run) are skipped and reported.
+    `ext` limits the scan to one file extension.
+
+    live_requested: None  -> interactive (confirm Y/N after the preview)
+                    True  -> CLI --apply (confirm unless assume_yes)
+                    False -> CLI dry run (report only)
+    The screen output is also appended to ~/Documents/log/fm.log.
+    """
+    while True:
+        with _ActivityLog():
+            _find_rename_screen(root, mode, text, replace_with, ext,
+                                live_requested, assume_yes)
+        if not pause_rerun():
+            return
+
+
+def _find_rename_screen(root, mode, text, replace_with, ext,
+                        live_requested, assume_yes):
+    screen("Find & Rename")
+    print()
+    ext_l = ext.lstrip(".").lower() if ext else None
+    mode_disp = {"prepend": "Prepend (text + filename)",
+                 "append":  "Append (before the extension)",
+                 "replace": "Replace (inside the filename)"}[mode]
+    print(f"  {YELLOW}Folder{RESET} : {root}")
+    print(f"  {YELLOW}Mode{RESET}   : {mode_disp}")
+    if mode == "replace":
+        print(f"  {YELLOW}Find{RESET}   : {text}  {DIM}(case-insensitive){RESET}")
+        print(f"  {YELLOW}Replace{RESET}: "
+              f"{replace_with if replace_with else DIM + '(remove the text)' + RESET}")
+    else:
+        print(f"  {YELLOW}Text{RESET}   : {text}")
+    if ext_l:
+        print(f"  {YELLOW}Ext{RESET}    : .{ext_l}")
+    print()
+    if not os.path.isdir(root):
+        print(color_text(f"  Not a directory: {root}", fg=RED))
+        return
+    if not text:
+        print(color_text("  Text required.", fg=RED))
+        return
+
+    pattern = (re.compile(re.escape(text), re.IGNORECASE)
+               if mode == "replace" else None)
+
+    plans = []                    # (dirpath, old_name, new_name)
+    collisions = []               # (dirpath, old_name, new_name)
+    taken = set()                 # target paths already claimed this run
+    scanned = already = 0
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if not d.startswith(".")
+                  and d.lower() not in EXCLUDED_DIR_NAMES]
+        for fn in sorted(fns):
+            if fn.startswith(".") or is_excluded_file(fn):
+                continue
+            if ext_l and not fn.lower().endswith("." + ext_l):
+                continue
+            scanned += 1
+            stem, dot_ext = os.path.splitext(fn)
+            if mode == "prepend":
+                if fn.lower().startswith(text.lower()):
+                    already += 1              # already has the prefix
+                    continue
+                new_name = text + fn
+            elif mode == "append":
+                if stem.lower().endswith(text.lower()):
+                    already += 1              # already has the suffix
+                    continue
+                new_name = stem + text + dot_ext
+            else:                             # replace
+                if not pattern.search(fn):
+                    continue                  # filename doesn't contain it
+                new_name = pattern.sub(lambda m: replace_with, fn)
+            # A rename must produce a real, different, visible filename.
+            if new_name == fn or not new_name or new_name.startswith("."):
+                already += 1
+                continue
+            target = os.path.join(dp, new_name)
+            if os.path.exists(target) or target in taken:
+                collisions.append((dp, fn, new_name))
+                continue
+            taken.add(target)
+            plans.append((dp, fn, new_name))
+
+    if not plans and not collisions:
+        print(color_text(
+            f"  Nothing to rename ({scanned:,} file(s) scanned"
+            + (f", {already:,} already named that way" if already else "")
+            + ").", fg=YELLOW))
+        return
+
+    # ---- Dry-run report: old → new, path shown relative to the root -------
+    for dp, fn, new_name in plans:
+        rel = os.path.relpath(os.path.join(dp, fn), root)
+        print(f"  {WHITE}{rel}{RESET}  {DIM}->{RESET}  "
+              f"{BRIGHT_CYAN}{new_name}{RESET}")
+    for dp, fn, new_name in collisions:
+        rel = os.path.relpath(os.path.join(dp, fn), root)
+        print(f"  {YELLOW}SKIP{RESET} {WHITE}{rel}{RESET}  {DIM}->{RESET}  "
+              f"{new_name}  {YELLOW}(target already exists){RESET}")
+    print()
+
+    summary = f"  DRY RUN — {len(plans):,} file(s) would be renamed"
+    extras = []
+    if already:
+        extras.append(f"{already:,} already named that way")
+    if collisions:
+        extras.append(f"{len(collisions):,} skipped — target exists")
+    if extras:
+        summary += f" ({', '.join(extras)})"
+    summary += ". Nothing has been changed."
+    print(color_text(summary, fg=YELLOW, style=BOLD))
+
+    if not plans:
+        return
+
+    do_rename = False
+    if live_requested is None:                # interactive
+        do_rename = safe_confirm(
+            f"  Rename these {len(plans):,} file(s)?", default=False)
+    elif live_requested is True:              # CLI --apply
+        do_rename = True if assume_yes else safe_confirm(
+            f"  Rename these {len(plans):,} file(s)?", default=False)
+    else:                                     # CLI dry run
+        print(color_text("  Re-run with --apply to perform the rename.",
+                         fg=YELLOW))
+        return
+    if not do_rename:
+        print(color_text("  Cancelled — nothing renamed.", fg=YELLOW))
+        return
+
+    ok = fail = 0
+    for dp, fn, new_name in plans:
+        try:
+            os.rename(os.path.join(dp, fn), os.path.join(dp, new_name))
+            ok += 1
+        except OSError as e:
+            fail += 1
+            print(color_text(f"  ✗ {os.path.join(dp, fn)}: {e}", fg=RED))
+    print()
+    report_result(fail == 0,
+                  f"Renamed {ok} file(s).",
+                  f"Renamed {ok} file(s), {fail} failed.")
 
 
 # =============================================================================
@@ -1684,6 +2458,84 @@ def remove_duplicates_by_hash(folders, live_requested=None):
             items.append((p, file_size(p), False))
     print()
     _finish_removal(items, live_requested, require_yes=True)
+    pause_return()
+
+
+def remove_duplicates_by_fuzzy_name(folders, live_requested=None, assume_yes=False):
+    """Remove fuzzy duplicates: same grouping as Find Duplicates by Fuzzy Name
+    (close name — dup-style endings stripped or 85%+ similar, same extension —
+    plus sizes within 1%). Keeps the shortest/cleanest name in each group;
+    the rest are listed for removal. Dry run + typed YES to delete."""
+    screen("Remove Duplicates (by Fuzzy Name)")
+    print()
+    folders = [clean_path(f) for f in folders if f]
+    valid = [f for f in folders if os.path.isdir(f)]
+    for f in folders:
+        if f not in valid:
+            print(color_text(f"  Skipping (not a directory): {f}", fg=YELLOW))
+    if not valid:
+        print(color_text("  No valid folders to scan.", fg=RED)); pause_return(); return
+    print(f"  {YELLOW}Folders{RESET}: {', '.join(valid)}")
+    print(f"  {DIM}Close names (duplicate-style endings stripped or 85%+ similar, same "
+          f"extension) with sizes within 1%. Keeps the shortest/cleanest name; "
+          f"removes the rest. Hidden files/folders are skipped.{RESET}\n")
+
+    dup_groups = _fuzzy_dup_groups(valid)
+    if not dup_groups:
+        print(color_text("  No fuzzy-duplicate files found.", fg=YELLOW))
+        pause_return(); return
+
+    print(color_text(f"  {len(dup_groups)} fuzzy-duplicate group(s):", fg=BRIGHT_CYAN, style=BOLD))
+    items = []
+    for group in dup_groups:
+        print(f"    {WHITE}{group[0][0]}{RESET}")
+        (name, _stem, _ext, size, dp) = group[0]
+        print(f"      {BRIGHT_CYAN}keep{RESET}   {os.path.join(dp, name)}  {DIM}({fmt_size(size)}){RESET}")
+        for (name, _stem, _ext, size, dp) in group[1:]:
+            p = os.path.join(dp, name)
+            print(f"      {BRIGHT_YELLOW}remove{RESET} {p}  {DIM}({fmt_size(size)}){RESET}")
+            items.append((p, size, False))
+    print()
+    _finish_removal(items, live_requested, assume_yes=assume_yes, require_yes=True)
+    pause_return()
+
+
+def remove_zero_size_files(folders, live_requested=None, assume_yes=False):
+    """Remove empty (0-byte) files under the given folders. Hidden
+    files/folders are skipped — so intentional placeholders like .gitkeep are
+    never touched. Dry run + confirm before anything is deleted."""
+    screen("Remove Files of 0 Size")
+    print()
+    folders = [clean_path(f) for f in folders if f]
+    valid = [f for f in folders if os.path.isdir(f)]
+    for f in folders:
+        if f not in valid:
+            print(color_text(f"  Skipping (not a directory): {f}", fg=YELLOW))
+    if not valid:
+        print(color_text("  No valid folders to scan.", fg=RED)); pause_return(); return
+    print(f"  {YELLOW}Folders{RESET}: {', '.join(valid)}")
+    print(f"  {DIM}Removes empty (0-byte) files. Hidden files/folders are skipped.{RESET}\n")
+
+    items = []
+    for folder in valid:
+        for dp, dns, fns in os.walk(folder):
+            dns[:] = [d for d in dns if not d.startswith(".") and d.lower() not in EXCLUDED_DIR_NAMES]
+            for fn in fns:
+                if fn.startswith(".") or is_excluded_file(fn):
+                    continue
+                p = os.path.join(dp, fn)
+                try:
+                    if os.path.getsize(p) == 0 and os.path.isfile(p):
+                        items.append((p, 0, False))
+                except OSError:
+                    continue
+    items.sort(key=lambda t: t[0])
+
+    if not items:
+        print(color_text("  No 0-byte files found.", fg=YELLOW))
+        pause_return(); return
+
+    _finish_removal(items, live_requested, assume_yes=assume_yes)
     pause_return()
 
 
@@ -2340,14 +3192,21 @@ def _scan_sync_side(root, recursive, exclude_hidden):
 
 
 def _sync_plan(src_map, dst_map, conflict):
-    """Decide what to push src → dst. Returns (new_rels, upd_rels).
+    """Decide what to push src → dst. Returns (new_rels, upd_rels, skipped_zero).
 
     A file that exists on both sides is only copied when the source wins the
     conflict rule: 'newest' = source modified time is newer (1s tolerance for
-    coarse filesystem timestamps), 'largest' = source is bigger."""
+    coarse filesystem timestamps), 'largest' = source is bigger.
+
+    Zero-byte source files are never copied (usually incomplete/placeholder
+    files) and are counted in skipped_zero instead."""
     new_rels, upd_rels = [], []
+    skipped_zero = 0
     for rel in sorted(src_map):
         s_size, s_mtime = src_map[rel]
+        if s_size == 0:
+            skipped_zero += 1
+            continue
         if rel not in dst_map:
             new_rels.append(rel)
             continue
@@ -2358,7 +3217,7 @@ def _sync_plan(src_map, dst_map, conflict):
         else:                                   # newest (default)
             if s_mtime > d_mtime + 1:
                 upd_rels.append(rel)
-    return new_rels, upd_rels
+    return new_rels, upd_rels, skipped_zero
 
 
 def _fmt_mtime(ts):
@@ -2374,16 +3233,15 @@ def _sync_screen(folder_a, folder_b, direction, recursive, conflict,
                  exclude_hidden, live_requested, assume_yes, profile_name):
     screen("Sync Folders")
     print()
-    if direction == "b2a":
-        src, dst, src_lbl, dst_lbl = folder_b, folder_a, "B", "A"
-    else:
-        src, dst, src_lbl, dst_lbl = folder_a, folder_b, "A", "B"
-
     if profile_name:
         print(f"  {YELLOW}Profile{RESET}  : {profile_name}")
     print(f"  {YELLOW}Folder A{RESET} : {folder_a}")
     print(f"  {YELLOW}Folder B{RESET} : {folder_b}")
-    print(f"  {YELLOW}Direction{RESET}: {src_lbl} → {dst_lbl}  (push new/updated files from {src_lbl} to {dst_lbl})")
+    if direction == "both":
+        print(f"  {YELLOW}Direction{RESET}: A ↔ B  (two-way: each side receives the other's new/updated files)")
+    else:
+        src_lbl, dst_lbl = ("B", "A") if direction == "b2a" else ("A", "B")
+        print(f"  {YELLOW}Direction{RESET}: {src_lbl} → {dst_lbl}  (push new/updated files from {src_lbl} to {dst_lbl})")
     print(f"  {YELLOW}Options{RESET}  : Recursive: {'Yes' if recursive else 'No'}   "
           f"Conflict: {'Newest' if conflict == 'newest' else 'Largest'} wins   "
           f"Hidden files: {'Excluded' if exclude_hidden else 'Included'}")
@@ -2394,37 +3252,74 @@ def _sync_screen(folder_a, folder_b, direction, recursive, conflict,
             print(color_text(f"  Folder {lbl} is not a directory: {path}", fg=RED))
             return
 
-    src_map = _scan_sync_side(src, recursive, exclude_hidden)
-    dst_map = _scan_sync_side(dst, recursive, exclude_hidden)
-    new_rels, upd_rels = _sync_plan(src_map, dst_map, conflict)
+    a_map = _scan_sync_side(folder_a, recursive, exclude_hidden)
+    b_map = _scan_sync_side(folder_b, recursive, exclude_hidden)
 
-    if not new_rels and not upd_rels:
-        print(color_text(f"  Nothing to copy — {dst_lbl} already has every "
-                         f"new/updated file from {src_lbl}.", fg=GREEN, style=BOLD))
-        print(f"  {DIM}Scanned {len(src_map):,} file(s) in {src_lbl}, "
-              f"{len(dst_map):,} in {dst_lbl}.{RESET}")
+    # Each pass is one push: (src, dst, src_lbl, dst_lbl, src_map, dst_map,
+    # new_rels, upd_rels, skipped_zero). Two-way = both passes; a file on both
+    # sides can only win the conflict rule in one direction, so the two passes
+    # never fight over the same file.
+    passes = []
+    if direction in ("a2b", "both"):
+        new_r, upd_r, sk = _sync_plan(a_map, b_map, conflict)
+        passes.append((folder_a, folder_b, "A", "B", a_map, b_map, new_r, upd_r, sk))
+    if direction in ("b2a", "both"):
+        new_r, upd_r, sk = _sync_plan(b_map, a_map, conflict)
+        passes.append((folder_b, folder_a, "B", "A", b_map, a_map, new_r, upd_r, sk))
+
+    total = sum(len(p[6]) + len(p[7]) for p in passes)
+    copy_desc = ("between A and B" if direction == "both"
+                 else f"from {passes[0][2]} to {passes[0][3]}")
+
+    if total == 0:
+        if direction == "both":
+            print(color_text("  Nothing to copy — A and B already have each "
+                             "other's new/updated files.", fg=GREEN, style=BOLD))
+        else:
+            print(color_text(f"  Nothing to copy — {passes[0][3]} already has every "
+                             f"new/updated file from {passes[0][2]}.", fg=GREEN, style=BOLD))
+        print(f"  {DIM}Scanned {len(a_map):,} file(s) in A, "
+              f"{len(b_map):,} in B.{RESET}")
+        for p in passes:
+            if p[8]:
+                print(f"  {DIM}Skipped {p[8]:,} zero-byte file(s) in {p[2]} "
+                      f"(never copied).{RESET}")
         return
 
-    total = len(new_rels) + len(upd_rels)
-    total_bytes = sum(src_map[r][0] for r in new_rels + upd_rels)
-    print(color_text(f"  {len(new_rels)} new, {len(upd_rels)} updated — "
-                     f"{fmt_size(total_bytes)} to copy from {src_lbl} to {dst_lbl}:",
+    total_new = sum(len(p[6]) for p in passes)
+    total_upd = sum(len(p[7]) for p in passes)
+    total_bytes = sum(p[4][r][0] for p in passes for r in p[6] + p[7])
+    print(color_text(f"  {total_new} new, {total_upd} updated — "
+                     f"{fmt_size(total_bytes)} to copy {copy_desc}:",
                      fg=WHITE, style=BOLD))
-    print()
-    print(color_text(f"  {'Action':<7} {'Size':>10}  {'Modified':<17} File",
-                     fg=WHITE, style=BOLD))
-    print(f"  {'-' * 7} {'-' * 10}  {'-' * 17} {'-' * 30}")
-    upd_set = set(upd_rels)
-    for rel in sorted(new_rels + upd_rels):
-        s_size, s_mtime = src_map[rel]
-        if rel in upd_set:
-            act = color_text(f"{'UPDATE':<7}", fg=YELLOW)
-            d_size, d_mtime = dst_map[rel]
-            tail = f"  {DIM}(replaces {fmt_size(d_size)}, {_fmt_mtime(d_mtime)}){RESET}"
-        else:
-            act = color_text(f"{'NEW':<7}", fg=GREEN)
-            tail = ""
-        print(f"  {act} {fmt_size(s_size):>10}  {_fmt_mtime(s_mtime):<17} {rel}{tail}")
+    for p in passes:
+        if p[8]:
+            print(f"  {DIM}Skipped {p[8]:,} zero-byte file(s) in {p[2]} "
+                  f"(never copied).{RESET}")
+
+    for src, dst, src_lbl, dst_lbl, src_map, dst_map, new_rels, upd_rels, _sk in passes:
+        if not new_rels and not upd_rels:
+            if direction == "both":
+                print()
+                print(color_text(f"  {src_lbl} → {dst_lbl}: nothing to copy.", fg=GREEN))
+            continue
+        print()
+        if direction == "both":
+            print(color_text(f"  {src_lbl} → {dst_lbl}:", fg=CYAN, style=BOLD))
+        print(color_text(f"  {'Action':<7} {'Size':>10}  {'Modified':<17} File",
+                         fg=WHITE, style=BOLD))
+        print(f"  {'-' * 7} {'-' * 10}  {'-' * 17} {'-' * 30}")
+        upd_set = set(upd_rels)
+        for rel in sorted(new_rels + upd_rels):
+            s_size, s_mtime = src_map[rel]
+            if rel in upd_set:
+                act = color_text(f"{'UPDATE':<7}", fg=YELLOW)
+                d_size, d_mtime = dst_map[rel]
+                tail = f"  {DIM}(replaces {fmt_size(d_size)}, {_fmt_mtime(d_mtime)}){RESET}"
+            else:
+                act = color_text(f"{'NEW':<7}", fg=GREEN)
+                tail = ""
+            print(f"  {act} {fmt_size(s_size):>10}  {_fmt_mtime(s_mtime):<17} {rel}{tail}")
 
     # Copy only on explicit opt-in — same safety model as Remove.
     print()
@@ -2432,11 +3327,11 @@ def _sync_screen(folder_a, folder_b, direction, recursive, conflict,
     if live_requested is None:                # interactive
         print(color_text("  This was a DRY RUN — nothing has been copied yet.",
                          fg=YELLOW, style=BOLD))
-        do_copy = safe_confirm(f"  Actually copy these {total} file(s) from "
-                               f"{src_lbl} to {dst_lbl}?", default=False)
+        do_copy = safe_confirm(f"  Actually copy these {total} file(s) "
+                               f"{copy_desc}?", default=False)
     elif live_requested is True:              # CLI --copy
         do_copy = True if assume_yes else safe_confirm(
-            f"  Copy these {total} file(s) from {src_lbl} to {dst_lbl}?", default=False)
+            f"  Copy these {total} file(s) {copy_desc}?", default=False)
     else:                                     # CLI dry run
         print(color_text("  DRY RUN — nothing copied. Re-run with --copy to sync.",
                          fg=YELLOW, style=BOLD))
@@ -2448,34 +3343,47 @@ def _sync_screen(folder_a, folder_b, direction, recursive, conflict,
 
     ok = fail = 0
     copied_bytes = 0
-    for rel in new_rels + upd_rels:
-        s_path = os.path.join(src, rel)
-        d_path = os.path.join(dst, rel)
-        try:
-            os.makedirs(os.path.dirname(d_path), exist_ok=True)
-            shutil.copy2(s_path, d_path)      # copy2 preserves mtime for future 'newest' runs
-            ok += 1
-            copied_bytes += src_map[rel][0]
-        except OSError as e:
-            fail += 1
-            print(color_text(f"  ✗ {rel}: {e}", fg=RED))
+    for src, dst, src_lbl, dst_lbl, src_map, dst_map, new_rels, upd_rels, _sk in passes:
+        for rel in new_rels + upd_rels:
+            s_path = os.path.join(src, rel)
+            d_path = os.path.join(dst, rel)
+            try:
+                os.makedirs(os.path.dirname(d_path), exist_ok=True)
+                shutil.copy2(s_path, d_path)  # copy2 preserves mtime for future 'newest' runs
+                ok += 1
+                copied_bytes += src_map[rel][0]
+            except OSError as e:
+                fail += 1
+                print(color_text(f"  ✗ {src_lbl} → {dst_lbl} {rel}: {e}", fg=RED))
     print()
     report_result(fail == 0,
-                  f"Copied {ok} file(s) ({fmt_size(copied_bytes)}) from {src_lbl} to {dst_lbl}.",
-                  f"Copied {ok} file(s) ({fmt_size(copied_bytes)}), {fail} failed.")
+                  f"Copied {ok} file(s) ({fmt_size(copied_bytes)}) {copy_desc}.",
+                  f"Copied {ok} file(s) ({fmt_size(copied_bytes)}) {copy_desc}, {fail} failed.")
 
 
 def sync_folders(folder_a, folder_b, direction, recursive=True,
                  conflict="newest", exclude_hidden=True, live_requested=None,
                  assume_yes=False, profile_name=None):
-    """One-way folder sync: push new/updated files from one folder into the
-    other (A → B or B → A). Nothing is ever deleted, and nothing is copied
-    until explicitly confirmed (interactive y, or --copy on the CLI) — the
-    preview is a DRY RUN. The screen output is also appended to
-    ~/Documents/log/fm.log."""
+    """Folder sync: push new/updated files from one folder into the other
+    (A → B or B → A), or both ways at once (direction 'both' — each side
+    receives the other's new/updated files; the conflict rule decides which
+    copy wins when a file exists on both sides). Nothing is ever deleted,
+    and nothing is copied until explicitly confirmed (interactive y, or
+    --copy on the CLI) — the preview is a DRY RUN. The screen output is
+    also appended to ~/Documents/log/fm.log."""
     with _ActivityLog():
         _sync_screen(folder_a, folder_b, direction, recursive, conflict,
                      exclude_hidden, live_requested, assume_yes, profile_name)
+
+
+def _parse_sync_direction(raw):
+    """Normalize a profile/CLI direction value to a2b, b2a, or both."""
+    d = str(raw).lower()
+    if d in ("both", "2way", "twoway", "two-way", "ab", "a2b+b2a"):
+        return "both"
+    if d in ("btoa", "b2a"):
+        return "b2a"
+    return "a2b"
 
 
 def _run_sync_profile(pr, live_requested=None, assume_yes=False):
@@ -2483,7 +3391,7 @@ def _run_sync_profile(pr, live_requested=None, assume_yes=False):
     recursive, newest wins, hidden excluded). Still previews + confirms."""
     folder_a = clean_path(str(pr.get("folderA", "")))
     folder_b = clean_path(str(pr.get("folderB", "")))
-    direction = "b2a" if str(pr.get("direction", "AtoB")).lower() in ("btoa", "b2a") else "a2b"
+    direction = _parse_sync_direction(pr.get("direction", "AtoB"))
     conflict = "largest" if str(pr.get("conflict", "newest")).lower() == "largest" else "newest"
     sync_folders(folder_a, folder_b, direction,
                  recursive=bool(pr.get("recursive", True)),
@@ -3259,6 +4167,18 @@ def find_menu():
          "name occurs more than once inside a single folder, every size is "
          "listed in that column. Matching is by filename only — contents are "
          "not compared. Nothing is changed; results are just listed."),
+        ("Find Duplicates by Fuzzy Name",
+         "Enter one or more folders (comma-separated). Each folder is scanned "
+         "recursively and files are grouped as duplicates when their names "
+         "are CLOSE — not necessarily identical — AND their sizes are close "
+         "(within 1%). Example: videofile1.mov and videofile.mov at the same "
+         "size are duplicates. Names are close when the stems match after "
+         "duplicate-style endings are stripped (trailing digits, \"(1)\", "
+         "\"[2]\", \"copy\", \"copy 2\") or are 85%+ similar; extensions "
+         "must match. Each group marks the shortest/cleanest name KEEP and "
+         "the rest DELETE — so videofile1.mov is the one flagged to delete. "
+         "Nothing is deleted; results are just listed, largest files first, "
+         "with a reclaimable-space total."),
         ("Find Missing by Filename",
          "Enter two folders, then choose what to show:\n"
          "• In 1st folder only — files the 2nd folder is missing.\n"
@@ -3288,6 +4208,21 @@ def find_menu():
          "touched. Then confirm [y/N] to replace every occurrence (you are "
          "also asked whether to save a .bak backup of each file first), or "
          "answer No to exit with nothing changed."),
+        ("Find & Rename",
+         "Find files, then rename them. Enter a folder, an optional file "
+         "extension, and choose how the text is applied:\n"
+         "• Prepend — add the text to the START of the filename "
+         "(text.mov -> api_text.mov). Files already starting with it are "
+         "skipped.\n"
+         "• Append — add the text to the END of the name, before the "
+         "extension (text.mov -> text_api.mov). Files already ending with "
+         "it are skipped.\n"
+         "• Replace — replace text inside the filename (draft_a.mov -> "
+         "final_a.mov); matching is literal and case-insensitive, and a "
+         "blank replacement removes the text.\n"
+         "ALWAYS a dry run first — every rename is listed old -> new, and "
+         "nothing is touched until you confirm [y/N]. Renames that would "
+         "overwrite an existing file are skipped and reported."),
     ]
     while True:
         ch = render_menu("Find", options)
@@ -3300,15 +4235,18 @@ def find_menu():
             pat = ask("Folder name/pattern (wildcards ok)", "*")
             find_folders(root, pat or "*")
             continue
-        if ch == "3":
+        if ch in ("3", "4"):
             folders = _ask_folders_multi()
             if folders:
-                find_duplicates_by_filename(folders)
+                if ch == "3":
+                    find_duplicates_by_filename(folders)
+                else:
+                    find_duplicates_by_fuzzy_name(folders)
             else:
                 pause_return()
             continue
-        if ch in ("4", "5"):
-            match_size = (ch == "5")
+        if ch in ("5", "6"):
+            match_size = (ch == "6")
             a = ask_folder("Folder 1")
             if not a:
                 pause_return(); continue
@@ -3322,7 +4260,7 @@ def find_menu():
                 continue
             find_missing_by_filename(a, b, mode, match_size)
             continue
-        if ch == "6":
+        if ch == "7":
             root = ask_folder("Folder to search")
             if not root:
                 pause_return(); continue
@@ -3333,6 +4271,47 @@ def find_menu():
             replace = ask("Replace with (blank = remove the text)")
             ext = ask("File extension (optional, e.g. php)")
             find_and_replace(root, search, replace, ext or None)
+            continue
+        if ch == "8":
+            root = ask_folder("Folder to search")
+            if not root:
+                pause_return(); continue
+            mode_opts = [
+                ("Prepend — add text to the start of the filename",
+                 "The text is added to the front of every found filename: "
+                 "text.mov -> api_text.mov. Files whose name already starts "
+                 "with the text are skipped, so reruns are safe."),
+                ("Append  — add text to the end, before the extension",
+                 "The text is inserted between the name and its extension: "
+                 "text.mov -> text_api.mov. Files whose name already ends "
+                 "with the text are skipped, so reruns are safe."),
+                ("Replace — replace text within the filename",
+                 "Enter the text to find in the filename and its replacement "
+                 "(blank = remove the text): draft_a.mov -> final_a.mov. "
+                 "Matching is literal and case-insensitive; only files whose "
+                 "name contains the text are listed."),
+            ]
+            mch = render_menu("Find & Rename — Mode", mode_opts,
+                              outro=[f"Folder - {root}"])
+            if mch == "back":
+                continue
+            replace_with = None
+            if mch == "1":
+                mode = "prepend"
+                text = ask("Text to prepend")
+            elif mch == "2":
+                mode = "append"
+                text = ask("Text to append (before the extension)")
+            else:
+                mode = "replace"
+                text = ask("Text to find in the filename")
+                if text:
+                    replace_with = ask("Replacement text (blank = remove the text)")
+            if not text:
+                print(color_text("  Text required — cancelled.", fg=YELLOW))
+                pause_return(); continue
+            ext = ask("File extension (optional, e.g. mov)")
+            find_and_rename(root, mode, text, replace_with, ext or None)
             continue
 
         # Find Files — pick one or more criteria, then prompt for each value.
@@ -3402,6 +4381,16 @@ def remove_menu():
          "the rest are listed for removal. This catches duplicates even when they "
          "have different names. Previewed and dry-run; to actually delete you must "
          "type the word YES (anything else cancels)."),
+        ("Duplicates by Fuzzy Name",
+         "Scan one or more folders and group files whose names are CLOSE — not "
+         "necessarily identical — AND whose sizes are close (within 1%). Example: "
+         "videofile1.mov and videofile.mov at the same size are duplicates, and "
+         "videofile1.mov is the one removed. Names are close when the stems match "
+         "after duplicate-style endings are stripped (trailing digits, \"(1)\", "
+         "\"[2]\", \"copy\") or are 85%+ similar; extensions must match. The "
+         "shortest/cleanest name in each group is kept; the rest are listed for "
+         "removal. Hidden files are skipped. Previewed and dry-run; to actually "
+         "delete you must type the word YES (anything else cancels)."),
         ("By File Name",
          "Delete files whose name matches a wildcard pattern, searched recursively "
          "under a chosen root. Every match is previewed with its size before "
@@ -3414,6 +4403,12 @@ def remove_menu():
          "When a matched folder sits inside another matched folder, only the "
          "top-most one is removed (it already contains the child). Previewed and "
          "dry-run until you confirm. Example pattern: *_tmp."),
+        ("Files of 0 Size",
+         "Scan one or more folders (enter several comma-separated) and list every "
+         "empty (0-byte) file for removal — incomplete downloads, placeholder "
+         "files, failed copies. Hidden files/folders are skipped, so intentional "
+         "markers like .gitkeep are never touched. Previewed and dry-run until "
+         "you confirm."),
     ]
     while True:
         ch = render_menu("Remove", options,
@@ -3430,6 +4425,10 @@ def remove_menu():
             if folders:
                 remove_duplicates_by_hash(folders, live_requested=None)
         elif ch == "3":
+            folders = _ask_folders_multi()
+            if folders:
+                remove_duplicates_by_fuzzy_name(folders, live_requested=None)
+        elif ch == "4":
             root = ask_folder("Search root", default=os.getcwd())
             if not root:
                 pause_return(); continue
@@ -3437,13 +4436,17 @@ def remove_menu():
             pat = ask("File name/pattern to remove (wildcards ok)")
             if pat:
                 remove_by_name(root, pat, live_requested=None)
-        elif ch == "4":
+        elif ch == "5":
             root = ask_folder("Search root", default=os.getcwd())
             if not root:
                 pause_return(); continue
             pat = ask("Folder name/pattern to remove (wildcards ok)")
             if pat:
                 remove_folders_by_name(root, pat, live_requested=None)
+        elif ch == "6":
+            folders = _ask_folders_multi()
+            if folders:
+                remove_zero_size_files(folders, live_requested=None)
 
 
 def _monitor_output_choice():
@@ -3563,12 +4566,17 @@ def _sync_interactive():
          "and files existing on both sides are copied when B's copy wins the "
          "conflict rule you pick next. Folder A is never read from — nothing in "
          "B changes, and nothing is ever deleted."),
+        ("Two-way sync A ↔ B",
+         "Both folders push to each other in one run. Files that exist only in "
+         "A are copied into B, files that exist only in B are copied into A, "
+         "and when a file exists on both sides the copy that wins the conflict "
+         "rule you pick next replaces the other. Nothing is ever deleted."),
     ]
     ch = render_menu("Sync — Direction", dir_options,
                      outro=[f"Folder A - {folder_a}", f"Folder B - {folder_b}"])
     if ch == "back":
         return
-    direction = "a2b" if ch == "1" else "b2a"
+    direction = {"1": "a2b", "2": "b2a", "3": "both"}[ch]
 
     conflict_options = [
         ("Choose the newest  — copy only when the source file is newer",
@@ -3600,7 +4608,8 @@ def sync_menu():
         "fmConfig.json as a syncProfiles list; each profile supports:\n"
         "• name — the label shown in this menu\n"
         "• folderA / folderB — the two folders (~ is expanded)\n"
-        "• direction — AtoB or BtoA (which side pushes its new/updated files)\n"
+        "• direction — AtoB, BtoA, or Both (which side pushes its new/updated "
+        "files; Both = two-way, each side receives the other's)\n"
         "• recursive — true/false (default true)\n"
         "• conflict — newest or largest: when a file exists on both sides, copy "
         "only when the source is newer / larger (default newest)\n"
@@ -3612,9 +4621,8 @@ def sync_menu():
         options = []
         for pr in profiles:
             name = pr.get("name") or "(unnamed profile)"
-            arrow = ("B → A"
-                     if str(pr.get("direction", "AtoB")).lower() in ("btoa", "b2a")
-                     else "A → B")
+            pdir = _parse_sync_direction(pr.get("direction", "AtoB"))
+            arrow = {"b2a": "B → A", "both": "A ↔ B"}.get(pdir, "A → B")
             conflict = ("Largest"
                         if str(pr.get("conflict", "newest")).lower() == "largest"
                         else "Newest")
@@ -3629,11 +4637,12 @@ def sync_menu():
                 "Previews first — nothing is copied until you confirm."))
         options.append((
             "Interactive Sync — enter folders, direction & options",
-            "Enter Folder A and Folder B, choose the push direction (A → B or "
-            "B → A), what wins when a file exists on both sides (newest or "
-            "largest), whether to include subfolders (default Yes), and whether "
-            "to exclude hidden files (default Yes). A preview lists every file "
-            "that would be copied — nothing is copied until you confirm."))
+            "Enter Folder A and Folder B, choose the push direction (A → B, "
+            "B → A, or two-way A ↔ B), what wins when a file exists on both "
+            "sides (newest or largest), whether to include subfolders (default "
+            "Yes), and whether to exclude hidden files (default Yes). A preview "
+            "lists every file that would be copied — nothing is copied until "
+            "you confirm."))
         ch = render_menu("Sync", options,
                          outro=(f"⚠ {perr}" if perr else None),
                          help_note=profile_note)
@@ -3654,7 +4663,7 @@ def zip_menu():
          "from the zips inside it."),
         ("Log Zip File",
          "Log a .zip or .tar archive — or every archive in a folder (top level "
-         "only) — to the CB9Inventory database on a remote server via the DocInfo Manager "
+         "only) — to the CB9Inventory database on BPA5 via the DocInfo Manager "
          "API. Each archive is recorded in zipFile (matched by name + size: "
          "insert when new, update when seen before) and its file listing is "
          "synced to zipFileContent (existing rows updated, new rows inserted, "
@@ -3728,56 +4737,70 @@ def cleanup_menu():
 
 def main_menu():
     options = [
-        ("Compare  — compare 2 files, or folder contents",
+        ("Compare  — Compare 2 files, or folder contents",
          "Two tools. 'Compare 2 Files' shows two text files side by side with a "
          "line-by-line diff. 'Compare Folder Contents' compares what's inside two "
          "folders by name and/or size, top-level or recursively — handy for "
          "checking a backup against the original."),
-        ("Display  — all drives, folder sizes",
+        ("Convert  — Data files between CSV / JSON / XLSX / SQL",
+         "Convert a data file to another format. Input: .csv, .json, or .xlsx "
+         "(first row / keys = column headers). Output: CSV, JSON (array of "
+         "objects), XLSX (needs openpyxl), or SQL (CREATE TABLE with guessed "
+         "column types + multi-row INSERTs, table named after the file). The "
+         "new file is written next to the source with the same name and the "
+         "new extension — collision-safe (name-2.ext, …), never overwrites."),
+        ("Display  — All drives, folder sizes",
          "'All Drives' shows the size, used, and free space of every mounted "
          "drive (free matches Finder's Available). The Subfolders options list "
          "every immediate subfolder of a chosen folder with its total size "
          "(human-readable and exact bytes) and file count, sorted alphabetically "
          "or largest-first, ending with a grand total. Good for finding what's "
          "eating disk space."),
-        ("Eject    — eject all external drives",
-         "List the external drives currently mounted (name, size, mount point) "
-         "and eject them all — the same as clicking each drive's eject button. "
-         "Asks for confirmation first, shows a per-drive Success/Failed status, "
-         "and offers a force eject for drives that won't let go (e.g. Spotlight "
-         "or an app is still using them). macOS only (uses diskutil, with a "
-         "Finder fallback)."),
-        ("Find     — files by combined criteria, folders by name, duplicates",
+        ("Find     — Files by combined criteria, folders by name, duplicates",
          "'Find Files' searches for files matching one or more criteria AND-ed "
          "together (filename pattern, extension, size over N MB, size under N MB) "
          "— e.g. .mov files under 5 MB. 'Find Folders' finds directories by name "
          "pattern. 'Find Duplicates by Filename' scans one or more folders and "
          "tables files sharing the same name with a size column per folder. "
          "'Find Missing by Filename' compares two folders and tables the files "
-         "present in only one of them. Nothing is changed; results are just "
-         "listed."),
-        ("Monitor  — file activity in a folder, real-time",
+         "present in only one of them. 'Find & Replace' edits text inside "
+         "files; 'Find & Rename' renames the files themselves (prepend / "
+         "append / replace text in the filename) — both dry-run first."),
+        ("Eject    — Eject all external drives",
+         "List the external drives currently mounted (name, size, mount point) "
+         "and eject them all — the same as clicking each drive's eject button. "
+         "Asks for confirmation first, shows a per-drive Success/Failed status, "
+         "and offers a force eject for drives that won't let go (e.g. Spotlight "
+         "or an app is still using them). macOS only (uses diskutil, with a "
+         "Finder fallback)."),
+        ("Monitor  — File activity in a folder, real-time",
          "Watch a folder (or a saved profile from fmConfig.json) and report "
          "every created, modified, and deleted file as it happens — on screen "
          "and to fm.log or a CSV. Options: recursive (default yes) and a file "
          "extension filter. Runs until you press [Q/ESC]."),
-        ("Remove   — duplicates, files/folders by name",
-         "Delete duplicate files (by name or by exact content), files by name "
-         "pattern, or folders by name pattern. Every removal shows a preview and "
-         "is a DRY RUN until you confirm — nothing is deleted by accident."),
-        ("Sync     — push new/updated files between two folders",
-         "One-way sync between two folders: push new/updated files A → B or "
-         "B → A. Options: recursive (default yes), what wins when a file exists "
+        ("Sync     — Push new/updated files between two folders",
+         "Sync two folders: push new/updated files A → B, B → A, or two-way "
+         "A ↔ B. Options: recursive (default yes), what wins when a file exists "
          "on both sides (newest or largest), and excluding hidden files. Saved "
          "profiles from fmConfig.json (syncProfiles) run the same way. Nothing "
          "is deleted, and every run previews first — a DRY RUN until you "
          "confirm."),
-        ("Zip      — view zip, log zip file, zip subfolders",
+        ("Zip      — View zip, log zip file, zip subfolders",
          "'View Zip' lists a zip's contents (sizes, ratios, dates) without "
          "extracting it. 'Log Zip File' records a .zip/.tar (or a folder of "
          "them) to the CB9Inventory database. 'Zip SubFolders' compresses each "
          "subfolder of a target into its own .zip."),
-        ("Clean Up — junk files, purge old log entries",
+        ("Remove   — Duplicates, files/folders by name",
+         "Delete duplicate files (by name or by exact content), files by name "
+         "pattern, or folders by name pattern. Every removal shows a preview and "
+         "is a DRY RUN until you confirm — nothing is deleted by accident."),
+        ("Create Random UID — Generate N random UUIDs",
+         "Enter how many UUIDs you need and get that many random (version 4) "
+         "UUIDs, one per line — e.g. 550e8400-e29b-41d4-a716-446655440000. "
+         "Handy for database keys, API tokens, and test data. The list is "
+         "also appended to the activity log (fm.log); [R] Run Again "
+         "regenerates a fresh batch with the same count."),
+        ("Clean Up — Junk files, purge old log entries",
          "'Remove Junk Files' finds and deletes every .DS_Store / desktop.ini "
          "under a root folder. 'Purge Old Log Files' trims entries older than "
          "N days (default 90) out of the .log files in ~/Documents/log, saving "
@@ -3790,16 +4813,17 @@ def main_menu():
         "• ~/Documents/log/fm.log\n"
         "Each run is appended with a [YYYY-MM-DD HH:MM:SS] timestamp line, exactly "
         "as shown on screen but with colors stripped — including the folders "
-        "entered and the full results table. Actions that log: Eject All External "
-        "Drives, Find Duplicates by Filename, Find Missing by Filename (reruns "
+        "entered and the full results table. Actions that log: Convert, Eject All "
+        "External Drives, Find Duplicates by Filename, Find Missing by Filename, "
+        "Find & Replace, Find & Rename, Create Random UID (reruns "
         "via [R] Run Again are logged again), Monitor File Activity (each event "
         "streams in real time — or to ~/Documents/log/fmMonitor.csv when CSV "
         "output is chosen), and Sync (the preview and what was copied). "
         "'Zip → Log Zip File' is different — it records archives to the "
-        "CB9Inventory database on a remote server, not to fm.log.")
+        "CB9Inventory database on BPA5, not to fm.log.")
     while True:
         ch = render_menu("Main Menu", options, is_main=True,
-                         intro="Compare · Display · Eject · Find · Monitor · Remove · Sync · Zip · Clean Up",
+                         intro="Compare · Convert · Display · Find · Eject · Monitor · Sync · Zip · Remove · Create Random UID · Clean Up",
                          help_note=help_note)
         if ch == "quit":
             exit_screen(SCRIPT_NAME, VER)
@@ -3807,21 +4831,25 @@ def main_menu():
         elif ch == "1":
             compare_menu()
         elif ch == "2":
-            display_menu()
+            convert_menu()
         elif ch == "3":
-            eject_external_drives()
-            pause_return()
+            display_menu()
         elif ch == "4":
             find_menu()
         elif ch == "5":
-            monitor_menu()
+            eject_external_drives()
+            pause_return()
         elif ch == "6":
-            remove_menu()
+            monitor_menu()
         elif ch == "7":
             sync_menu()
         elif ch == "8":
             zip_menu()
         elif ch == "9":
+            remove_menu()
+        elif ch == "10":
+            create_random_uid_menu()
+        elif ch == "11":
             cleanup_menu()
 
 
@@ -3842,6 +4870,15 @@ def build_parser():
     cc.add_argument("a"); cc.add_argument("b")
     cc.add_argument("--recursive", action="store_true", help="Descend into subfolders (default: top level only)")
     cc.add_argument("--by", choices=["name", "size", "both"], default="both")
+
+    cv = sub.add_parser("convert", help="Convert a data file (.csv/.json/.xlsx) to CSV, JSON, XLSX, or SQL")
+    cv.add_argument("file", help="source file (.csv, .json, or .xlsx)")
+    cv.add_argument("to", choices=["csv", "json", "xlsx", "sql"],
+                    help="output format — written next to the source, same name, new extension")
+
+    uu = sub.add_parser("uuid", help="Generate N random UUIDs, one per line")
+    uu.add_argument("count", nargs="?", type=int, default=1,
+                    help="how many UUIDs to generate (default 1)")
 
     sz = sub.add_parser("sizes", help="Display subfolder sizes")
     sz.add_argument("folder", nargs="?", default=".")
@@ -3864,6 +4901,10 @@ def build_parser():
     fdup = sub.add_parser("find-dups", help="Find duplicate filenames across one or more folders (size table)")
     fdup.add_argument("folders", nargs="+")
 
+    ffuz = sub.add_parser("find-fuzzy-dups",
+                          help="Find close-name + close-size duplicates (grouped with KEEP/DELETE markers)")
+    ffuz.add_argument("folders", nargs="+")
+
     fmis = sub.add_parser("find-missing", help="Find filenames present in only one of two folders (size table)")
     fmis.add_argument("a"); fmis.add_argument("b")
     fmis.add_argument("--in", dest="mode", choices=["first", "second", "either"], default="either",
@@ -3878,8 +4919,22 @@ def build_parser():
     frp.add_argument("--bak", action="store_true", help="save a .bak backup of each modified file")
     frp.add_argument("--yes", action="store_true", help="Skip confirmation when replacing")
 
+    frn = sub.add_parser("find-rename", help="Find files and rename them (dry-run unless --apply)")
+    frn.add_argument("root")
+    frn_mode = frn.add_mutually_exclusive_group(required=True)
+    frn_mode.add_argument("--prepend", metavar="TEXT",
+                          help="add TEXT to the start of each filename (skips files already starting with it)")
+    frn_mode.add_argument("--append", dest="append_text", metavar="TEXT",
+                          help="add TEXT to the end of the name, before the extension (skips files already ending with it)")
+    frn_mode.add_argument("--replace", nargs=2, metavar=("FIND", "NEW"),
+                          help="replace FIND with NEW inside the filename (literal, case-insensitive; NEW may be '')")
+    frn.add_argument("--ext", help="only files with this extension, e.g. mov")
+    frn.add_argument("--apply", action="store_true", help="Actually rename (default: dry run)")
+    frn.add_argument("--yes", action="store_true", help="Skip confirmation when renaming")
+
     rm = sub.add_parser("remove", help="Remove items (dry-run unless --delete)")
-    rm.add_argument("type", choices=["folder", "name", "folder-name", "dup-name", "dup-hash"])
+    rm.add_argument("type", choices=["folder", "name", "folder-name", "dup-name", "dup-hash",
+                                     "dup-fuzzy", "zero-size"])
     rm.add_argument("args", nargs="+")
     rm.add_argument("--delete", action="store_true", help="Actually delete (default: dry run)")
     rm.add_argument("--yes", action="store_true", help="Skip confirmation when deleting")
@@ -3896,11 +4951,11 @@ def build_parser():
     ej.add_argument("--force", action="store_true", help="force-unmount before ejecting (bypasses Spotlight etc.)")
     ej.add_argument("--yes", action="store_true", help="Skip confirmation and eject immediately")
 
-    sy = sub.add_parser("sync", help="One-way sync: push new/updated files between two folders (dry-run unless --copy)")
+    sy = sub.add_parser("sync", help="Sync: push new/updated files between two folders, one-way or two-way (dry-run unless --copy)")
     sy.add_argument("a", nargs="?", help="Folder A")
     sy.add_argument("b", nargs="?", help="Folder B")
-    sy.add_argument("--to", choices=["b", "a"], default="b",
-                    help="push direction: 'b' = A→B (default), 'a' = B→A")
+    sy.add_argument("--to", choices=["b", "a", "both"], default="b",
+                    help="push direction: 'b' = A→B (default), 'a' = B→A, 'both' = two-way A↔B")
     sy.add_argument("--profile", help="run a named syncProfiles entry from fmConfig.json instead of giving folders")
     sy.add_argument("--conflict", choices=["newest", "largest"], default="newest",
                     help="when a file exists on both sides, copy only if the source is newer (default) / larger")
@@ -3933,6 +4988,10 @@ def run_cli(ns):
     cmd = ns.cmd
     if cmd == "compare-2files":
         compare_two_files(clean_path(ns.a), clean_path(ns.b))
+    elif cmd == "convert":
+        convert_file(clean_path(ns.file), ns.to)
+    elif cmd == "uuid":
+        generate_uuids(ns.count)
     elif cmd == "compare-contents":
         compare_folder_contents(clean_path(ns.a), clean_path(ns.b),
                                 ns.recursive, ns.by)
@@ -3954,12 +5013,23 @@ def run_cli(ns):
         find_files_combined(clean_path(ns.root), ns.name, ns.ext, ns.over, ns.under)
     elif cmd == "find-dups":
         find_duplicates_by_filename(ns.folders)
+    elif cmd == "find-fuzzy-dups":
+        find_duplicates_by_fuzzy_name(ns.folders)
     elif cmd == "find-missing":
         find_missing_by_filename(ns.a, ns.b, ns.mode, ns.size)
     elif cmd == "find-replace":
         find_and_replace(clean_path(ns.root), ns.search, ns.replace, ns.ext,
                          live_requested=ns.apply, assume_yes=ns.yes,
                          backup=ns.bak)
+    elif cmd == "find-rename":
+        if ns.prepend is not None:
+            mode, text, repl = "prepend", ns.prepend, None
+        elif ns.append_text is not None:
+            mode, text, repl = "append", ns.append_text, None
+        else:
+            mode, text, repl = "replace", ns.replace[0], ns.replace[1]
+        find_and_rename(clean_path(ns.root), mode, text, repl, ns.ext,
+                        live_requested=ns.apply, assume_yes=ns.yes)
     elif cmd == "remove":
         live = True if ns.delete else False
         if ns.type == "folder":
@@ -3972,6 +5042,10 @@ def run_cli(ns):
             _cli_dupname(ns.args, live, ns.yes)
         elif ns.type == "dup-hash":
             _cli_duphash(ns.args, live, ns.yes)
+        elif ns.type == "dup-fuzzy":
+            remove_duplicates_by_fuzzy_name(ns.args, live, assume_yes=ns.yes)
+        elif ns.type == "zero-size":
+            remove_zero_size_files(ns.args, live, assume_yes=ns.yes)
     elif cmd == "monitor":
         if ns.profile:
             profiles, perr = _load_monitor_profiles()
@@ -4023,7 +5097,7 @@ def run_cli(ns):
             print(color_text("  usage: sync FOLDER_A FOLDER_B  (or: sync --profile NAME)", fg=RED))
         else:
             sync_folders(clean_path(ns.a), clean_path(ns.b),
-                         "a2b" if ns.to == "b" else "b2a",
+                         {"b": "a2b", "a": "b2a", "both": "both"}[ns.to],
                          recursive=not ns.no_recursive,
                          conflict=ns.conflict,
                          exclude_hidden=not ns.include_hidden,

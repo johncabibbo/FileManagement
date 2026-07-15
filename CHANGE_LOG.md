@@ -2,6 +2,83 @@
 
 ---
 
+## v1.38 — Jul 15, 2026
+
+- Remove menu: two new options.
+  - 3rd option **"Duplicates by Fuzzy Name"** (grouped with the other Duplicates removals) — same close-name + close-size grouping as Find Duplicates by Fuzzy Name (shared `_fuzzy_dup_groups()` helper). The shortest/cleanest name in each group is kept; the rest are listed for removal. Hidden files skipped. Dry run + typed **YES** required to delete. CLI: `fm.py remove dup-fuzzy FOLDER... [--delete] [--yes]`.
+  - 6th (last) option **"Files of 0 Size"** — lists every empty (0-byte) file under the entered folders for removal (incomplete downloads, placeholders, failed copies). Hidden files/folders skipped, so markers like `.gitkeep` are never touched. Standard dry-run + confirm. CLI: `fm.py remove zero-size FOLDER... [--delete] [--yes]`.
+  - By File Name / By Folder Name renumbered to 4/5.
+- README updated (overview, Remove menu table + notes, CLI usage/reference).
+
+---
+
+## v1.37 — Jul 15, 2026
+
+- Find menu: new 4th option **"Find Duplicates by Fuzzy Name"** (right after Find Duplicates by Filename) — finds files whose **names are close** (not necessarily identical) **and whose sizes are close** (within 1%). Example: `videofile1.mov` and `videofile.mov` at the same size are duplicates, and `videofile1.mov` is the one flagged to delete.
+  - Close names = same stem after stripping duplicate-style endings (trailing digits, `(1)`, `[2]`, `copy`, `copy 2`, `- Copy`) or 85%+ difflib similarity; the extension must match.
+  - Matches are clustered into groups (largest files first). Each group marks the shortest/cleanest name **KEEP** and the rest **DELETE** — candidates only; read-only, nothing is deleted.
+  - Summary line: group count, DELETE-candidate count, and total reclaimable bytes. Results log to `~/Documents/log/fm.log`; [R] Run Again supported.
+  - Later Find options renumbered (Missing by Filename 5, Missing by Filename & Size 6, Find & Replace 7, Find & Rename 8).
+  - CLI: `fm.py find-fuzzy-dups FOLDER...`
+- README updated (overview, Find section with example output, activity-log table, CLI usage/reference).
+
+---
+
+## v1.36 — Jul 15, 2026
+
+- Sync: new **two-way direction (A ↔ B)** — both folders push to each other in one run. Files only in A are copied to B, files only in B are copied to A, and when a file exists on both sides the copy that wins the conflict rule (newest/largest) replaces the other; ties are skipped. Still a DRY RUN preview first (grouped A → B and B → A sections) and nothing is ever deleted.
+  - Interactive Sync: third Direction option "Two-way sync A ↔ B".
+  - Profiles: `direction` now accepts `Both` (also `2way`/`twoway`); shown as "A ↔ B" in the Sync menu.
+  - CLI: `fm.py sync A B --to both`.
+- README updated (overview, profiles table, Sync section, CLI usage/options).
+
+---
+
+## v1.35 — Jul 15, 2026
+
+- Sync: zero-byte source files are never copied (skipped with a "Skipped N zero-byte file(s)" note) so incomplete/placeholder 0-byte files can't overwrite good files on the destination side.
+
+---
+
+## v1.34 — Jul 14, 2026
+
+- Main Menu labels: capitalized the first letter after the em-dash on all 11 options (e.g. "Compare  — compare 2 files…" → "Compare  — Compare 2 files…"). README overview block matched. Cosmetic only.
+
+---
+
+## v1.33 — Jul 14, 2026
+
+- Main Menu reordered (per spec — no longer alphabetical): 1. Compare  2. Convert  3. Display  4. Find  5. Eject  6. Monitor  7. Sync  8. Zip  9. Remove  10. Create Random UID  11. Clean Up. Dispatch, [H] Help order, and the menu intro line updated to match; README overview block and usage sections reordered/renumbered the same way. No feature changes.
+
+---
+
+## v1.32 — Jul 14, 2026
+
+- Find menu: new 7th (last) option "Find & Rename" — find files, then rename them. Enter a folder, an optional file extension, and a mode:
+  - Prepend — text added to the start of the filename (text.mov -> api_text.mov); files already starting with the text are skipped, so reruns are safe.
+  - Append — text inserted at the end of the name, before the extension (text.mov -> text_api.mov); files already ending with it are skipped.
+  - Replace — literal, case-insensitive replacement inside the filename (draft_intro.mov -> final_intro.mov); blank replacement removes the text; only matching files are listed.
+- ALWAYS a dry run first — every planned rename is listed old -> new before anything is touched. Renames that would overwrite an existing file (or collide with another rename in the same run) are skipped and reported; hidden/junk files are never touched. Results screens log to fm.log and offer [R] Run Again.
+- New find_and_rename()/_find_rename_screen(). CLI: fm.py find-rename ROOT (--prepend TEXT | --append TEXT | --replace FIND NEW) [--ext E] [--apply] [--yes].
+
+---
+
+## v1.31 — Jul 14, 2026
+
+- Main Menu: new "Create Random UID" option (3rd, keeping the menu alphabetical; Clean Up stays last) — enter a number N and get N random (version 4) UUIDs displayed one per line, capped at 10,000 per run. The list is appended to fm.log; [R] Run Again regenerates a fresh batch with the same count.
+- New generate_uuids()/_uuid_screen()/create_random_uid_menu(). CLI: fm.py uuid [N] (default 1).
+
+---
+
+## v1.30 — Jul 14, 2026
+
+- Main Menu: new "Convert" option (2nd, keeping the menu alphabetical; Clean Up stays last) — convert a data file between formats. Input: .csv (delimiter sniffed: , ; tab |; UTF-8 BOM tolerated), .json (array of objects → keys become headers in first-seen order, array of arrays with a header row, or a single object), or .xlsx (first sheet, first row = header; via openpyxl). Output: CSV (RFC-4180), JSON (pretty-printed array of objects), XLSX (openpyxl — the only format needing a package; if missing, a clear message says pip3 install openpyxl and everything else still works), or SQL.
+- SQL output: CREATE TABLE named after the file with column types guessed per column (TINYINT(1) / INT / BIGINT / DECIMAL(m,d) / DATE / DATETIME / VARCHAR(n) / TEXT), then multi-row INSERTs in 500-row batches; empty cells become NULL, values escaped, identifiers sanitized and de-duplicated.
+- The output file is written beside the source with the same name and new extension, collision-safe (name-2.ext, name-3.ext, …) — never overwrites. Short rows are padded and extra cells dropped (the header row defines the columns). Results screens log to fm.log and offer [R] Run Again.
+- New convert_menu()/convert_file()/_read_table()/format writers/_unique_path(). CLI: fm.py convert FILE csv|json|xlsx|sql.
+
+---
+
 ## v1.29 — Jul 14, 2026
 
 - Find menu: new 6th (last) option "Find & Replace" — enter a folder, the text to find, the replacement text, and an optional file extension. Scans recursively (hidden/binary/excluded files skipped); matching is literal and case-insensitive. ALWAYS dry-runs first, listing every match as file + line number + line with the matched text highlighted, then a [y/N] confirm performs the replacement (with a follow-up prompt offering .bak backups of each modified file) — No exits unchanged. .bak files are skipped by the scan (so reruns never clobber fresh backups) unless --ext bak is asked for explicitly. Round-trips file bytes and line endings via surrogateescape + newline="".
@@ -112,7 +189,7 @@
 
 ## v1.13 — Jul 11, 2026
 
-- Zip menu: new 2nd option "Log Zip File" — logs a .zip/.tar archive (or every archive in a folder, top level only) to the CB9Inventory database on a remote server via the DocInfo Manager API (api/zipFileLog.php). zipFile rows are matched by name+size (insert or update); zipFileContent is synced (update by path, insert new, soft-delete missing). .gz files are ignored.
+- Zip menu: new 2nd option "Log Zip File" — logs a .zip/.tar archive (or every archive in a folder, top level only) to the CB9Inventory database on BPA5 via the DocInfo Manager API (api/zipFileLog.php). zipFile rows are matched by name+size (insert or update); zipFileContent is synced (update by path, insert new, soft-delete missing). .gz files are ignored.
 - New fmConfig.json (logZip: apiUrl, serverSecretKey) + CLI: fm.py zip-log.
 
 ---
